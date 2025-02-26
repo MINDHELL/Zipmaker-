@@ -1,9 +1,12 @@
 import os
 import zipfile
 import logging
+import asyncio
+import shutil
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from config import API_ID, API_HASH, BOT_TOKEN
+from flask import Flask
 
 # Enable logging
 logging.basicConfig(level=logging.INFO)
@@ -12,117 +15,112 @@ logger = logging.getLogger(__name__)
 # Initialize the bot
 bot = Client("ZipBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Store user file paths and zip status
-user_files = {}
-user_collecting = {}
+# Flask app for health check (Fixes TCP error on Koyeb)
+app = Flask(__name__)
 
-# Directory for temporary files
+@app.route("/")
+def home():
+    return "Bot is running!", 200
+
+def run_flask():
+    app.run(host="0.0.0.0", port=8000)
+
+# Directory for temporary files (Use "/app/tmp" on Koyeb)
 TEMP_DIR = "/app/tmp" if os.getenv("KOYEB_REGION") else "downloads"
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+# Store user file paths
+user_files = {}
+user_collecting = set()  # Track users who started /zip
 
 # Start command
 @bot.on_message(filters.command("start"))
 async def start(client, message: Message):
-    await message.reply_text("👋 Welcome! Type `/zip` to start selecting files.")
+    await message.reply_text("👋 Welcome! Send `/zip` to start selecting files.")
 
-# Start ZIP process
+# Command to start collecting files
 @bot.on_message(filters.command("zip"))
-async def start_zipping(client, message: Message):
+async def start_collection(client, message: Message):
     user_id = message.from_user.id
-    user_files[user_id] = []
-    user_collecting[user_id] = True  # Start collecting files
+    user_collecting.add(user_id)  # Mark user as collecting files
+    user_files[user_id] = []  # Initialize empty list
+    await message.reply_text("📂 Now send the files you want to zip. When done, send `/done`.")
 
-    await message.reply_text(
-        "📂 Now send the files you want to include in the ZIP.\nWhen you're done, type `/done`.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data="cancel")]])
-    )
-
-# Receive files
+# Handle file uploads
 @bot.on_message(filters.document | filters.video | filters.photo)
 async def receive_files(client, message: Message):
     user_id = message.from_user.id
 
-    if user_id not in user_collecting or not user_collecting[user_id]:
-        await message.reply_text("⚠️ You haven't started a ZIP session yet.\nType `/zip` first.")
-        return
+    if user_id not in user_collecting:
+        return  # Ignore files if user didn't start /zip
 
-    # Ensure user has a list
     if user_id not in user_files:
         user_files[user_id] = []
 
-    # Download file
-    file_path = await message.download(file_name=os.path.join(TEMP_DIR, message.document.file_name))
+    # Download the file
+    file_name = message.document.file_name if message.document else f"{message.message_id}.jpg"
+    file_path = os.path.join(TEMP_DIR, file_name)
+    await message.download(file_path)
+
+    # Store the file
     user_files[user_id].append(file_path)
+    await message.reply_text(f"✅ Added: `{file_name}`\nSend more files or `/done` when finished.")
 
-    # Show updated file list
-    await message.reply_text(
-        f"✅ File added: `{message.document.file_name}`\nTotal files: {len(user_files[user_id])}\nSend more or type `/done` when finished.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Remove a File", callback_data="remove_file")]])
-    )
-
-# Remove a file
-@bot.on_callback_query(filters.regex("remove_file"))
-async def remove_file(client, callback_query):
-    user_id = callback_query.from_user.id
+# Command to remove a file
+@bot.on_message(filters.command("remove"))
+async def remove_file(client, message: Message):
+    user_id = message.from_user.id
     if user_id not in user_files or not user_files[user_id]:
-        await callback_query.answer("No files to remove!", show_alert=True)
+        await message.reply_text("⚠️ No files to remove.")
         return
 
-    # Create buttons for file selection
     buttons = [
-        [InlineKeyboardButton(os.path.basename(file), callback_data=f"delete_{index}")]
-        for index, file in enumerate(user_files[user_id])
+        [InlineKeyboardButton(f"🗑 {os.path.basename(f)}", callback_data=f"remove_{i}")]
+        for i, f in enumerate(user_files[user_id])
     ]
-    buttons.append([InlineKeyboardButton("Cancel", callback_data="cancel")])
+    buttons.append([InlineKeyboardButton("✅ Done", callback_data="done")])
 
-    await callback_query.message.reply_text("Select a file to remove:", reply_markup=InlineKeyboardMarkup(buttons))
+    await message.reply_text("🗑 Select a file to remove:", reply_markup=InlineKeyboardMarkup(buttons))
 
-# Delete a selected file
-@bot.on_callback_query(filters.regex(r"delete_(\d+)"))
-async def delete_selected_file(client, callback_query):
+@bot.on_callback_query()
+async def handle_callback(client, callback_query):
     user_id = callback_query.from_user.id
-    index = int(callback_query.data.split("_")[1])
 
-    if user_id in user_files and 0 <= index < len(user_files[user_id]):
+    if callback_query.data.startswith("remove_"):
+        index = int(callback_query.data.split("_")[1])
         removed_file = user_files[user_id].pop(index)
-        os.remove(removed_file)  # Delete from storage
-        await callback_query.message.edit_text(f"❌ Removed `{os.path.basename(removed_file)}`.\nTotal files left: {len(user_files[user_id])}")
+        os.remove(removed_file)
 
-# Cancel file selection
-@bot.on_callback_query(filters.regex("cancel"))
-async def cancel_selection(client, callback_query):
-    user_id = callback_query.from_user.id
-    user_collecting[user_id] = False
-    user_files[user_id] = []
-    await callback_query.message.edit_text("❌ ZIP process cancelled.")
+        await callback_query.answer("✅ File removed!")
+        await remove_file(client, callback_query.message)
 
-# Finalize ZIP process
+    elif callback_query.data == "done":
+        await callback_query.message.delete()
+
+# Command to finalize ZIP creation
 @bot.on_message(filters.command("done"))
-async def finalize_zip(client, message: Message):
+async def create_zip(client, message: Message):
     user_id = message.from_user.id
-
     if user_id not in user_files or not user_files[user_id]:
-        await message.reply_text("⚠️ No files selected for zipping.\nType `/zip` to start.")
+        await message.reply_text("⚠️ No files to zip. Send `/zip` to start.")
         return
 
     zip_name = os.path.join(TEMP_DIR, f"{user_id}.zip")
-
-    # Create ZIP
     with zipfile.ZipFile(zip_name, "w") as zipf:
-        for file in user_files[user_id]:
-            zipf.write(file, os.path.basename(file))
+        for file_path in user_files[user_id]:
+            zipf.write(file_path, os.path.basename(file_path))
 
-    # Send ZIP
-    await client.send_document(message.chat.id, zip_name)
+    # Send ZIP file
+    await message.reply_document(zip_name, caption="📦 Here is your ZIP file!")
 
     # Cleanup
-    os.remove(zip_name)
     for file in user_files[user_id]:
         os.remove(file)
-    user_files[user_id] = []
-    user_collecting[user_id] = False
+    os.remove(zip_name)
+    del user_files[user_id]
+    user_collecting.discard(user_id)
 
-    await message.reply_text("✅ ZIP file created and sent!")
-
-# Start bot
-bot.run()
+if __name__ == "__main__":
+    import threading
+    threading.Thread(target=run_flask).start()
+    bot.run()
