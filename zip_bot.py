@@ -31,11 +31,23 @@ async def receive_files(client, message: Message):
     if user_id not in user_files:
         user_files[user_id] = []
 
-    file_path = await message.download(file_name=os.path.join(TEMP_DIR, message.document.file_name))
+    # Determine the file type and set filename
+    if message.document:
+        file_name = message.document.file_name
+    elif message.video:
+        file_name = f"video_{message.video.file_unique_id}.mp4"
+    elif message.photo:
+        file_name = f"photo_{message.photo.file_unique_id}.jpg"
+    else:
+        await message.reply_text("⚠️ Unsupported file type.")
+        return
+
+    # Download the file
+    file_path = await message.download(file_name=os.path.join(TEMP_DIR, file_name))
     user_files[user_id].append(file_path)
 
     logger.info(f"File saved: {file_path}")  # Debugging log
-    await message.reply_text(f"✅ File **{message.document.file_name}** added! Send more or type `/zip filename`.")
+    await message.reply_text(f"✅ File **{file_name}** added! Send more or type `/zip filename`.")
 
 # ZIP command
 @bot.on_message(filters.command("zip"))
