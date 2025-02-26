@@ -5,9 +5,9 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # Bot Configurations (Replace with your credentials)
-API_ID = "your_api_id"
-API_HASH = "your_api_hash"
-BOT_TOKEN = "your_bot_token"
+API_ID = "27788368"
+API_HASH = "9df7e9ef3d7e4145270045e5e43e1081"
+BOT_TOKEN = "8064879322:AAH4Uv8ZJbHfDZRBnre_Uf4D-ew-Q8SCinc"
 
 # Enable logging
 logging.basicConfig(level=logging.INFO)
