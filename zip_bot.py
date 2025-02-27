@@ -1,6 +1,6 @@
 import os
 import tempfile
-import logging
+import asyncio
 import pymongo
 from zipfile import ZipFile
 from flask import Flask
@@ -16,7 +16,7 @@ MONGO_URI = "mongodb+srv://aarshhub:6L1PAPikOnAIHIRA@cluster0.6shiu.mongodb.net/
 # Initialize Bot
 bot = Client("zip_bot", bot_token=BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
 
-# Initialize Flask for health check (fixes TCP error in Koyeb)
+# Initialize Flask for health check
 app = Flask(__name__)
 
 @app.route("/")
@@ -28,10 +28,7 @@ mongo_client = pymongo.MongoClient(MONGO_URI)
 db = mongo_client["zip_bot"]
 files_collection = db["user_files"]
 
-# Logger
-logging.basicConfig(level=logging.INFO)
-
-# User file storage (temporary before zipping)
+# Store user file list
 user_files = {}
 
 # Start Command
@@ -46,7 +43,7 @@ async def start_zip(bot, message: Message):
     user_files[user_id] = []  # Reset file list
     await message.reply("Upload files now. Use /done when finished.")
 
-# Collect Files (Documents, Photos, Videos)
+# Collect Files
 @bot.on_message(filters.document | filters.photo | filters.video)
 async def collect_files(bot, message: Message):
     user_id = message.from_user.id
@@ -66,15 +63,18 @@ async def collect_files(bot, message: Message):
         file_type = "Unknown"
 
     if file_id:
-        # Store file in memory
         user_files.setdefault(user_id, []).append(file_id)
-
-        # Store in MongoDB
         files_collection.insert_one({"user_id": user_id, "file_id": file_id, "file_type": file_type})
         total_files = len(user_files[user_id])
         await message.reply(f"{file_type} saved! You have uploaded {total_files} files.")
     else:
         await message.reply("⚠️ Could not detect a valid file. Please try sending it again.")
+
+# Async File Downloader
+async def download_file(bot, file_id, file_name, folder):
+    file_path = os.path.join(folder, file_name)
+    await bot.download_media(file_id, file_path)
+    return file_path
 
 # Finish ZIP Process
 @bot.on_message(filters.command("done"))
@@ -91,9 +91,12 @@ async def create_zip(bot, message: Message):
     with tempfile.TemporaryDirectory() as tmp_dir:
         zip_filename = os.path.join(tmp_dir, "files.zip")
 
+        # Parallel Downloading
+        tasks = [download_file(bot, file_id, f"file_{i}", tmp_dir) for i, file_id in enumerate(files)]
+        downloaded_files = await asyncio.gather(*tasks)
+
         with ZipFile(zip_filename, 'w') as zipObj:
-            for index, file_id in enumerate(files):
-                file_path = await bot.download_media(file_id, file_name=f"{index}")
+            for file_path in downloaded_files:
                 zipObj.write(file_path, os.path.basename(file_path))
 
         await msg.edit("✅ Files zipped! Uploading...")
@@ -104,7 +107,7 @@ async def create_zip(bot, message: Message):
 # Run Bot & Flask Server
 if __name__ == "__main__":
     import threading
-    from waitress import serve  # Production WSGI server
+    from waitress import serve
 
     threading.Thread(target=lambda: serve(app, host="0.0.0.0", port=8000), daemon=True).start()
     bot.run()
