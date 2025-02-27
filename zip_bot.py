@@ -21,14 +21,15 @@ bot = Client("ZipBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # Dictionary to track user states
 user_states = {}
-user_files = {}
 
 # Command: /start
 @bot.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message: Message):
     user_id = message.from_user.id
     user_states[user_id] = "uploading"
-    user_files[user_id] = []
+
+    # Clear old files from MongoDB
+    files_collection.delete_many({"user_id": user_id})
 
     await message.reply("Send me files, and I'll zip them for you!\nUse /done when you're finished.")
 
@@ -36,8 +37,9 @@ async def start_cmd(client, message: Message):
 @bot.on_message(filters.command("done") & filters.private)
 async def done_cmd(client, message: Message):
     user_id = message.from_user.id
+    file_count = files_collection.count_documents({"user_id": user_id})
 
-    if user_id not in user_files or len(user_files[user_id]) == 0:
+    if file_count == 0:
         await message.reply("You haven't uploaded any files. Send some files first!")
         return
 
@@ -54,12 +56,12 @@ async def file_handler(client, message: Message):
         return
 
     file_id = message.document.file_id
-    user_files[user_id].append(file_id)
 
     # Store file in MongoDB
     files_collection.insert_one({"user_id": user_id, "file_id": file_id})
 
-    await message.reply(f"Added file {len(user_files[user_id])}. Send more or use /done.")
+    file_count = files_collection.count_documents({"user_id": user_id})
+    await message.reply(f"Added file {file_count}. Send more or use /done.")
 
 # Handle ZIP file naming
 @bot.on_message(filters.private & filters.text)
@@ -80,14 +82,17 @@ async def name_handler(client, message: Message):
         zip_path = os.path.join(tmp_dir, f"{zip_name}.zip")
 
         with ZipFile(zip_path, "w") as zip_file:
-            for file_id in user_files[user_id]:
+            files = files_collection.find({"user_id": user_id})
+            for file in files:
+                file_id = file["file_id"]
                 file_path = await client.download_media(file_id, file_name=tmp_dir)
                 zip_file.write(file_path, os.path.basename(file_path))
 
         await message.reply_document(zip_path, caption="Here is your ZIP file!")
     
-    # Clear user data
-    user_files[user_id] = []
+    # Clear old files from MongoDB
+    files_collection.delete_many({"user_id": user_id})
+    
     user_states[user_id] = "uploading"
     await message.reply("Send more files or use /done to create another ZIP.")
 
