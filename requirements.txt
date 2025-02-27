@@ -5,3 +5,4 @@ Werkzeug==2.2.3
 garnet
 motor
 pymongo
+waitress
