@@ -1,112 +1,104 @@
+import tempfile
+from os.path import basename
+from zipfile import ZipFile
 import os
-import zipfile
-import logging
-from pyrogram import Client, filters
-from pyrogram.types import Message
+from garnet import ctx
+from garnet.runner import RuntimeConfig, run
+from garnet.filters import text, State, group
+from garnet.storages import DictStorage
+from garnet.events import Router
 
-# Bot Configurations (Replace with your credentials)
-API_ID = "27788368"
-API_HASH = "9df7e9ef3d7e4145270045e5e43e1081"
+# Bot credentials
 BOT_TOKEN = "8064879322:AAH4Uv8ZJbHfDZRBnre_Uf4D-ew-Q8SCinc"
+APP_ID = "27788368"  # Replace with your actual API ID
+APP_HASH = "9df7e9ef3d7e4145270045e5e43e1081"
+SESSION_DSN = "mongodb+srv://aarshhub:6L1PAPikOnAIHIRA@cluster0.6shiu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"  # Optional, if using MongoDB for session storage
 
-# Enable logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+router = Router()
 
-# Initialize bot
-bot = Client("ZipBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+class States(group.Group):
+    state_waiting = group.M()
+    state_uploading = group.M()
+    state_naming = group.M()
 
-# Storage for user files
-user_files = {}
-user_collecting = {}
+@router.use()
+async def only_pm(handler, event):
+    if event.is_private:
+        try:
+            return await handler(event)
+        except Exception as e:
+            print("Error happened", e)
+            await event.reply(f"An error happened, please retry:\nError code: {e}")
+            fsm = ctx.CageCtx.get()
+            await fsm.set_state(States.state_waiting)
+            await fsm.set_data({"files": []})
 
-# Temporary file directory
-TEMP_DIR = "/app/tmp" if os.getenv("KOYEB_REGION") else "downloads"
-os.makedirs(TEMP_DIR, exist_ok=True)
+@router.message(text.commands("start", prefixes="/") & (State.exact(States.state_waiting) | State.entry))
+async def response(event):
+    await event.reply("Hi! Send me multiple files to zip.\nUse /done when you're ready to zip them.")
+    fsm = ctx.CageCtx.get()
+    await fsm.set_state(States.state_uploading)
+    await fsm.set_data({"files": []})
 
-# Start command
-@bot.on_message(filters.command("start"))
-async def start(client, message: Message):
-    await message.reply_text("👋 Welcome! Use `/zip` to start collecting files for zipping.")
+@router.message(State.exact(States.state_waiting) | State.entry)
+async def response(event):
+    await event.reply("Send /start to begin.")
 
-# Start ZIP process
-@bot.on_message(filters.command("zip"))
-async def start_zip(client, message: Message):
-    user_id = message.from_user.id
-    user_collecting[user_id] = True
-    user_files[user_id] = []
-    
-    await message.reply_text("📂 Send me the files you want to ZIP.\n\n✅ Send `/done` when finished.")
+@router.message(text.commands("done", prefixes="/") & State.exact(States.state_uploading))
+async def finished(event):
+    fsm = ctx.CageCtx.get()
+    await fsm.set_state(States.state_naming)
+    await event.reply("Please enter a name for the ZIP file (without extension).")
 
-# Receive files
-@bot.on_message(filters.document | filters.video | filters.photo)
-async def receive_files(client, message: Message):
-    user_id = message.from_user.id
+@router.message(State.exact(States.state_naming))
+async def naming(event):
+    fsm = ctx.CageCtx.get()
+    await fsm.set_state(States.state_waiting)
+    data = await fsm.get_data()
+    files = data['files']
 
-    if user_id not in user_collecting:
-        return  # Ignore files if user didn't start /zip
-
-    if user_id not in user_files:
-        user_files[user_id] = []
-
-    # Fix: Use message.id instead of message.message_id
-    file_name = message.document.file_name if message.document else f"{message.id}.jpg"
-    file_path = os.path.join(TEMP_DIR, file_name)
-    await message.download(file_path)
-
-    # Store the file
-    user_files[user_id].append(file_path)
-    await message.reply_text(f"✅ Added: `{file_name}`\nSend more files or `/done` when finished.")
-
-# Remove a file
-@bot.on_message(filters.command("remove"))
-async def remove_file(client, message: Message):
-    user_id = message.from_user.id
-
-    if user_id not in user_files or not user_files[user_id]:
-        await message.reply_text("❌ No files to remove.")
+    if not files:
+        await event.reply("No files uploaded. Please send files first.")
         return
 
-    files_list = "\n".join([f"`{os.path.basename(f)}`" for f in user_files[user_id]])
-    await message.reply_text(f"📂 Your files:\n{files_list}\n\nSend the filename to remove.")
-
-    @bot.on_message(filters.text)
-    async def delete_selected_file(client, msg: Message):
-        file_to_remove = msg.text.strip()
-        file_paths = [f for f in user_files[user_id] if os.path.basename(f) == file_to_remove]
-
-        if not file_paths:
-            await msg.reply_text("❌ File not found.")
-            return
+    msg = await event.reply("Processing ZIP file...")
+    
+    with tempfile.TemporaryDirectory() as tmp_dirname:
+        zip_path = f"{tmp_dirname}/{event.text}.zip"
+        with ZipFile(zip_path, 'w') as zipObj:
+            for file in files:
+                path = await event.client.download_media(file, file=tmp_dirname)
+                zipObj.write(path, basename(path))
         
-        os.remove(file_paths[0])
-        user_files[user_id].remove(file_paths[0])
-        await msg.reply_text(f"🗑 Removed `{file_to_remove}`")
+        await msg.edit(f"Zipping completed! Uploading file...")
+        await event.reply(file=zip_path)
 
-# Finalize ZIP creation
-@bot.on_message(filters.command("done"))
-async def create_zip(client, message: Message):
-    user_id = message.from_user.id
+    await fsm.set_data({"files": []})
 
-    if user_id not in user_files or not user_files[user_id]:
-        await message.reply_text("❌ No files selected for zipping.")
-        return
+@router.message(State.exact(States.state_uploading))
+async def uploading(event):
+    if event.file:
+        fsm = ctx.CageCtx.get()
+        data = await fsm.get_data()
+        files = data['files']
+        files.append(event.message.media)
+        await fsm.set_data(data)
+        await event.reply(f"File saved! {len(files)} files added so far.")
+    else:
+        await event.reply("Please send a file or type /done when finished.")
 
-    zip_filename = os.path.join(TEMP_DIR, f"user_{user_id}.zip")
+def default_conf_maker() -> RuntimeConfig:
+    return RuntimeConfig(
+        bot_token=BOT_TOKEN,
+        app_id=APP_ID,
+        app_hash=APP_HASH,
+        session_dsn=SESSION_DSN,
+    )
 
-    with zipfile.ZipFile(zip_filename, "w") as zipf:
-        for file in user_files[user_id]:
-            zipf.write(file, os.path.basename(file))
+async def main():
+    main_router = Router().include(router)
+    await run(main_router, DictStorage(), conf_maker=default_conf_maker)
 
-    await message.reply_document(zip_filename, caption="📦 Here is your ZIP file.")
-    
-    # Cleanup
-    os.remove(zip_filename)
-    for file in user_files[user_id]:
-        os.remove(file)
-    
-    del user_files[user_id]
-    del user_collecting[user_id]
-
-# Run the bot
-bot.run()
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
