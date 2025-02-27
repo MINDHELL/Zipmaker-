@@ -1,75 +1,110 @@
 import os
 import tempfile
-from os.path import basename
+import logging
+import pymongo
 from zipfile import ZipFile
+from flask import Flask
 from pyrogram import Client, filters
-from pymongo import MongoClient
+from pyrogram.types import Message
 
-# Bot credentials (replace with actual values)
-API_ID = int(os.getenv("API_ID", "27788368"))
-API_HASH = os.getenv("API_HASH", "9df7e9ef3d7e4145270045e5e43e1081")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8064879322:AAH4Uv8ZJbHfDZRBnre_Uf4D-ew-Q8SCinc")
-MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://aarshhub:6L1PAPikOnAIHIRA@cluster0.6shiu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+# Bot Credentials
+BOT_TOKEN = "8064879322:AAH4Uv8ZJbHfDZRBnre_Uf4D-ew-Q8SCinc"
+API_ID = "27788368"
+API_HASH = "9df7e9ef3d7e4145270045e5e43e1081"
+MONGO_URI = "mongodb+srv://aarshhub:6L1PAPikOnAIHIRA@cluster0.6shiu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
-# Initialize MongoDB
-mongo_client = MongoClient(MONGO_URI)
+# Initialize Bot
+bot = Client("zip_bot", bot_token=BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
+
+# Initialize Flask for health check (fixes TCP error in Koyeb)
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot is running!", 200
+
+# MongoDB Connection
+mongo_client = pymongo.MongoClient(MONGO_URI)
 db = mongo_client["zip_bot"]
-files_collection = db["uploaded_files"]
+files_collection = db["user_files"]
 
-# Initialize bot
-bot = Client("ZipBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Logger
+logging.basicConfig(level=logging.INFO)
 
-# Dictionary to store user file lists in memory
+# User file storage (temporary before zipping)
 user_files = {}
 
-
+# Start Command
 @bot.on_message(filters.command("start"))
-async def start(bot, message):
-    await message.reply("Welcome! Send multiple files, then use /zip to create a ZIP file.")
+async def start(bot, message: Message):
+    await message.reply("Send files to be added to a ZIP. Use /zip to start.")
 
-
-@bot.on_message(filters.document | filters.photo | filters.video)
-async def collect_files(bot, message):
-    user_id = message.from_user.id
-
-    # Save file info to MongoDB
-    file_info = {"user_id": user_id, "file_id": message.document.file_id if message.document else message.photo.file_id}
-    files_collection.insert_one(file_info)
-
-    # Save file in memory for quick access
-    if user_id not in user_files:
-        user_files[user_id] = []
-    user_files[user_id].append(file_info)
-
-    await message.reply(f"File saved! You have uploaded {len(user_files[user_id])} files.")
-
-
+# Begin ZIP Process
 @bot.on_message(filters.command("zip"))
-async def zip_files(bot, message):
+async def start_zip(bot, message: Message):
     user_id = message.from_user.id
+    user_files[user_id] = []  # Reset file list
+    await message.reply("Upload files now. Use /done when finished.")
 
-    # Fetch user files from MongoDB
-    user_files_db = list(files_collection.find({"user_id": user_id}))
+# Collect Files (Documents, Photos, Videos)
+@bot.on_message(filters.document | filters.photo | filters.video)
+async def collect_files(bot, message: Message):
+    user_id = message.from_user.id
+    file_id = None
 
-    if not user_files_db:
-        await message.reply("You haven't uploaded any files. Send some files first!")
+    # Detect File Type
+    if message.document:
+        file_id = message.document.file_id
+        file_type = "Document"
+    elif message.photo:
+        file_id = message.photo.file_id
+        file_type = "Photo"
+    elif message.video:
+        file_id = message.video.file_id
+        file_type = "Video"
+    else:
+        file_type = "Unknown"
+
+    if file_id:
+        # Store file in memory
+        user_files.setdefault(user_id, []).append(file_id)
+
+        # Store in MongoDB
+        files_collection.insert_one({"user_id": user_id, "file_id": file_id, "file_type": file_type})
+        total_files = len(user_files[user_id])
+        await message.reply(f"{file_type} saved! You have uploaded {total_files} files.")
+    else:
+        await message.reply("⚠️ Could not detect a valid file. Please try sending it again.")
+
+# Finish ZIP Process
+@bot.on_message(filters.command("done"))
+async def create_zip(bot, message: Message):
+    user_id = message.from_user.id
+    files = user_files.get(user_id, [])
+
+    if not files:
+        await message.reply("⚠️ You haven't uploaded any files. Send some first!")
         return
 
-    zip_name = f"user_{user_id}.zip"
-    with tempfile.TemporaryDirectory() as tmp_dirname:
-        zip_path = os.path.join(tmp_dirname, zip_name)
+    msg = await message.reply("⏳ Downloading files...")
 
-        with ZipFile(zip_path, 'w') as zip_file:
-            for file in user_files_db:
-                file_id = file["file_id"]
-                file_path = await bot.download_media(file_id, file_name=tmp_dirname)
-                zip_file.write(file_path, basename(file_path))
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        zip_filename = os.path.join(tmp_dir, "files.zip")
 
-        await message.reply_document(zip_path, caption="Here is your zipped file!")
+        with ZipFile(zip_filename, 'w') as zipObj:
+            for index, file_id in enumerate(files):
+                file_path = await bot.download_media(file_id, file_name=f"{index}")
+                zipObj.write(file_path, os.path.basename(file_path))
 
-    # Clear user's files after zipping
-    files_collection.delete_many({"user_id": user_id})
-    user_files.pop(user_id, None)
+        await msg.edit("✅ Files zipped! Uploading...")
+        await message.reply_document(zip_filename, caption="Here is your ZIP file 📁")
 
+    user_files[user_id] = []  # Reset files list
 
-bot.run()
+# Run Bot & Flask Server
+if __name__ == "__main__":
+    import threading
+    from waitress import serve  # Production WSGI server
+
+    threading.Thread(target=lambda: serve(app, host="0.0.0.0", port=8000), daemon=True).start()
+    bot.run()
