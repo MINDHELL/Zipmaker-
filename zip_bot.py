@@ -44,8 +44,10 @@ async def start_zip(bot, message: Message):
     user_files[user_id] = []  # Reset file list
     await message.reply("Upload files now. Use /done when finished.")
 
-# Progress Bar
+# Progress Bar with Zero Check
 async def progress_bar(current, total, message):
+    if total == 0:
+        return  # Avoid division by zero
     percent = (current / total) * 100
     progress = "▓" * int(percent // 10) + "░" * (10 - int(percent // 10))
     await message.edit(f"📥 Downloading: {percent:.1f}%\n[{progress}]")
@@ -112,10 +114,12 @@ async def create_zip(bot, message: Message):
 
     user_files[user_id] = []  # Reset files list
 
-# Run Bot & Flask Server
+# Run Bot & Flask Server Separately
 if __name__ == "__main__":
     import threading
-    from waitress import serve
 
-    threading.Thread(target=lambda: serve(app, host="0.0.0.0", port=8000), daemon=True).start()
+    def run_flask():
+        app.run(host="0.0.0.0", port=5000)  # Use a different port to avoid conflicts
+
+    threading.Thread(target=run_flask, daemon=True).start()
     bot.run()
