@@ -1,6 +1,7 @@
 import os
-import tempfile
+import time
 import asyncio
+import tempfile
 import pymongo
 from zipfile import ZipFile
 from flask import Flask
@@ -43,13 +44,28 @@ async def start_zip(bot, message: Message):
     user_files[user_id] = []  # Reset file list
     await message.reply("Upload files now. Use /done when finished.")
 
+# Progress Bar
+async def progress_bar(current, total, message):
+    percent = (current / total) * 100
+    progress = "▓" * int(percent // 10) + "░" * (10 - int(percent // 10))
+    await message.edit(f"📥 Downloading: {percent:.1f}%\n[{progress}]")
+
+# Async File Downloader with Progress
+async def download_file(bot, file_id, file_name, folder, message):
+    file_path = os.path.join(folder, file_name)
+
+    async def progress_callback(current, total):
+        await progress_bar(current, total, message)
+
+    await bot.download_media(file_id, file_path, progress=progress_callback)
+    return file_path
+
 # Collect Files
 @bot.on_message(filters.document | filters.photo | filters.video)
 async def collect_files(bot, message: Message):
     user_id = message.from_user.id
     file_id = None
 
-    # Detect File Type
     if message.document:
         file_id = message.document.file_id
         file_type = "Document"
@@ -59,8 +75,6 @@ async def collect_files(bot, message: Message):
     elif message.video:
         file_id = message.video.file_id
         file_type = "Video"
-    else:
-        file_type = "Unknown"
 
     if file_id:
         user_files.setdefault(user_id, []).append(file_id)
@@ -69,12 +83,6 @@ async def collect_files(bot, message: Message):
         await message.reply(f"{file_type} saved! You have uploaded {total_files} files.")
     else:
         await message.reply("⚠️ Could not detect a valid file. Please try sending it again.")
-
-# Async File Downloader
-async def download_file(bot, file_id, file_name, folder):
-    file_path = os.path.join(folder, file_name)
-    await bot.download_media(file_id, file_path)
-    return file_path
 
 # Finish ZIP Process
 @bot.on_message(filters.command("done"))
@@ -86,13 +94,13 @@ async def create_zip(bot, message: Message):
         await message.reply("⚠️ You haven't uploaded any files. Send some first!")
         return
 
-    msg = await message.reply("⏳ Downloading files...")
+    msg = await message.reply("⏳ Preparing to download files...")
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         zip_filename = os.path.join(tmp_dir, "files.zip")
 
-        # Parallel Downloading
-        tasks = [download_file(bot, file_id, f"file_{i}", tmp_dir) for i, file_id in enumerate(files)]
+        # Parallel Downloading with Progress
+        tasks = [download_file(bot, file_id, f"file_{i}", tmp_dir, msg) for i, file_id in enumerate(files)]
         downloaded_files = await asyncio.gather(*tasks)
 
         with ZipFile(zip_filename, 'w') as zipObj:
