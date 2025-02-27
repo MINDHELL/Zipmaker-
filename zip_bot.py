@@ -53,11 +53,23 @@ async def progress_bar(current, total, message):
     await message.edit(f"📥 Downloading: {percent:.1f}%\n[{progress}]")
 
 # Async File Downloader with Progress
-async def download_file(bot, file_id, file_name, folder, message):
+async def download_file(bot, message, folder, msg):
+    if message.document:
+        file_id = message.document.file_id
+        file_name = message.document.file_name  # Get original filename
+    elif message.photo:
+        file_id = message.photo.file_id
+        file_name = f"{file_id}.jpg"
+    elif message.video:
+        file_id = message.video.file_id
+        file_name = message.video.file_name if message.video.file_name else f"{file_id}.mp4"
+    else:
+        return None
+
     file_path = os.path.join(folder, file_name)
 
     async def progress_callback(current, total):
-        await progress_bar(current, total, message)
+        await progress_bar(current, total, msg)
 
     await bot.download_media(file_id, file_path, progress=progress_callback)
     return file_path
@@ -66,25 +78,9 @@ async def download_file(bot, file_id, file_name, folder, message):
 @bot.on_message(filters.document | filters.photo | filters.video)
 async def collect_files(bot, message: Message):
     user_id = message.from_user.id
-    file_id = None
-
-    if message.document:
-        file_id = message.document.file_id
-        file_type = "Document"
-    elif message.photo:
-        file_id = message.photo.file_id
-        file_type = "Photo"
-    elif message.video:
-        file_id = message.video.file_id
-        file_type = "Video"
-
-    if file_id:
-        user_files.setdefault(user_id, []).append(file_id)
-        files_collection.insert_one({"user_id": user_id, "file_id": file_id, "file_type": file_type})
-        total_files = len(user_files[user_id])
-        await message.reply(f"{file_type} saved! You have uploaded {total_files} files.")
-    else:
-        await message.reply("⚠️ Could not detect a valid file. Please try sending it again.")
+    user_files.setdefault(user_id, []).append(message)
+    total_files = len(user_files[user_id])
+    await message.reply(f"✅ File saved! You have uploaded {total_files} files.")
 
 # Finish ZIP Process
 @bot.on_message(filters.command("done"))
@@ -102,12 +98,13 @@ async def create_zip(bot, message: Message):
         zip_filename = os.path.join(tmp_dir, "files.zip")
 
         # Parallel Downloading with Progress
-        tasks = [download_file(bot, file_id, f"file_{i}", tmp_dir, msg) for i, file_id in enumerate(files)]
+        tasks = [download_file(bot, msg, tmp_dir, msg) for msg in files]
         downloaded_files = await asyncio.gather(*tasks)
 
         with ZipFile(zip_filename, 'w') as zipObj:
             for file_path in downloaded_files:
-                zipObj.write(file_path, os.path.basename(file_path))
+                if file_path:  # Only add valid files
+                    zipObj.write(file_path, os.path.basename(file_path))
 
         await msg.edit("✅ Files zipped! Uploading...")
         await message.reply_document(zip_filename, caption="Here is your ZIP file 📁")
