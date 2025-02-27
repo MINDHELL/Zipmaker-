@@ -1,104 +1,95 @@
-import tempfile
-from os.path import basename
-from zipfile import ZipFile
 import os
-from garnet import ctx
-from garnet.runner import RuntimeConfig, run
-from garnet.filters import text, State, group
-from garnet.storages import DictStorage
-from garnet.events import Router
+import tempfile
+from zipfile import ZipFile
+from pyrogram import Client, filters
+from pyrogram.types import Message
+from pymongo import MongoClient
 
-# Bot credentials
-BOT_TOKEN = "8064879322:AAH4Uv8ZJbHfDZRBnre_Uf4D-ew-Q8SCinc"
-APP_ID = "27788368"  # Replace with your actual API ID
-APP_HASH = "9df7e9ef3d7e4145270045e5e43e1081"
-SESSION_DSN = "mongodb+srv://aarshhub:6L1PAPikOnAIHIRA@cluster0.6shiu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"  # Optional, if using MongoDB for session storage
+# BOT CREDENTIALS
+API_ID = "27788368"  # Replace with your API ID
+API_HASH = "9df7e9ef3d7e4145270045e5e43e1081"  # Replace with your API Hash
+BOT_TOKEN = "8064879322:AAH4Uv8ZJbHfDZRBnre_Uf4D-ew-Q8SCinc"  # Replace with your Bot Token
+MONGO_URI = "mongodb+srv://aarshhub:6L1PAPikOnAIHIRA@cluster0.6shiu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"  # Replace with your MongoDB connection URI
 
-router = Router()
+# MongoDB Setup
+mongo_client = MongoClient(MONGO_URI)
+db = mongo_client["zip_bot"]
+files_collection = db["uploaded_files"]
 
-class States(group.Group):
-    state_waiting = group.M()
-    state_uploading = group.M()
-    state_naming = group.M()
+# Initialize the bot
+bot = Client("ZipBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-@router.use()
-async def only_pm(handler, event):
-    if event.is_private:
-        try:
-            return await handler(event)
-        except Exception as e:
-            print("Error happened", e)
-            await event.reply(f"An error happened, please retry:\nError code: {e}")
-            fsm = ctx.CageCtx.get()
-            await fsm.set_state(States.state_waiting)
-            await fsm.set_data({"files": []})
+# Dictionary to track user states
+user_states = {}
+user_files = {}
 
-@router.message(text.commands("start", prefixes="/") & (State.exact(States.state_waiting) | State.entry))
-async def response(event):
-    await event.reply("Hi! Send me multiple files to zip.\nUse /done when you're ready to zip them.")
-    fsm = ctx.CageCtx.get()
-    await fsm.set_state(States.state_uploading)
-    await fsm.set_data({"files": []})
+# Command: /start
+@bot.on_message(filters.command("start") & filters.private)
+async def start_cmd(client, message: Message):
+    user_id = message.from_user.id
+    user_states[user_id] = "uploading"
+    user_files[user_id] = []
 
-@router.message(State.exact(States.state_waiting) | State.entry)
-async def response(event):
-    await event.reply("Send /start to begin.")
+    await message.reply("Send me files, and I'll zip them for you!\nUse /done when you're finished.")
 
-@router.message(text.commands("done", prefixes="/") & State.exact(States.state_uploading))
-async def finished(event):
-    fsm = ctx.CageCtx.get()
-    await fsm.set_state(States.state_naming)
-    await event.reply("Please enter a name for the ZIP file (without extension).")
+# Command: /done
+@bot.on_message(filters.command("done") & filters.private)
+async def done_cmd(client, message: Message):
+    user_id = message.from_user.id
 
-@router.message(State.exact(States.state_naming))
-async def naming(event):
-    fsm = ctx.CageCtx.get()
-    await fsm.set_state(States.state_waiting)
-    data = await fsm.get_data()
-    files = data['files']
-
-    if not files:
-        await event.reply("No files uploaded. Please send files first.")
+    if user_id not in user_files or len(user_files[user_id]) == 0:
+        await message.reply("You haven't uploaded any files. Send some files first!")
         return
 
-    msg = await event.reply("Processing ZIP file...")
+    user_states[user_id] = "naming"
+    await message.reply("Send a name for the ZIP file (without extension).")
+
+# Handle file uploads
+@bot.on_message(filters.private & filters.document)
+async def file_handler(client, message: Message):
+    user_id = message.from_user.id
+
+    if user_states.get(user_id) != "uploading":
+        await message.reply("Please use /start before sending files.")
+        return
+
+    file_id = message.document.file_id
+    user_files[user_id].append(file_id)
+
+    # Store file in MongoDB
+    files_collection.insert_one({"user_id": user_id, "file_id": file_id})
+
+    await message.reply(f"Added file {len(user_files[user_id])}. Send more or use /done.")
+
+# Handle ZIP file naming
+@bot.on_message(filters.private & filters.text)
+async def name_handler(client, message: Message):
+    user_id = message.from_user.id
+
+    if user_states.get(user_id) != "naming":
+        return
+
+    zip_name = message.text.strip()
+    if not zip_name:
+        await message.reply("Invalid name. Please send a valid ZIP file name.")
+        return
+
+    await message.reply("Downloading and zipping your files...")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        zip_path = os.path.join(tmp_dir, f"{zip_name}.zip")
+
+        with ZipFile(zip_path, "w") as zip_file:
+            for file_id in user_files[user_id]:
+                file_path = await client.download_media(file_id, file_name=tmp_dir)
+                zip_file.write(file_path, os.path.basename(file_path))
+
+        await message.reply_document(zip_path, caption="Here is your ZIP file!")
     
-    with tempfile.TemporaryDirectory() as tmp_dirname:
-        zip_path = f"{tmp_dirname}/{event.text}.zip"
-        with ZipFile(zip_path, 'w') as zipObj:
-            for file in files:
-                path = await event.client.download_media(file, file=tmp_dirname)
-                zipObj.write(path, basename(path))
-        
-        await msg.edit(f"Zipping completed! Uploading file...")
-        await event.reply(file=zip_path)
+    # Clear user data
+    user_files[user_id] = []
+    user_states[user_id] = "uploading"
+    await message.reply("Send more files or use /done to create another ZIP.")
 
-    await fsm.set_data({"files": []})
-
-@router.message(State.exact(States.state_uploading))
-async def uploading(event):
-    if event.file:
-        fsm = ctx.CageCtx.get()
-        data = await fsm.get_data()
-        files = data['files']
-        files.append(event.message.media)
-        await fsm.set_data(data)
-        await event.reply(f"File saved! {len(files)} files added so far.")
-    else:
-        await event.reply("Please send a file or type /done when finished.")
-
-def default_conf_maker() -> RuntimeConfig:
-    return RuntimeConfig(
-        bot_token=BOT_TOKEN,
-        app_id=APP_ID,
-        app_hash=APP_HASH,
-        session_dsn=SESSION_DSN,
-    )
-
-async def main():
-    main_router = Router().include(router)
-    await run(main_router, DictStorage(), conf_maker=default_conf_maker)
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+# Run the bot
+bot.run()
