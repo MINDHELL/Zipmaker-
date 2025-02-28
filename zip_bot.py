@@ -24,7 +24,7 @@ bot = Client("zip_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 # Dictionary to store user file data temporarily
 user_files = {}
 
-# Function to show a progress bar
+# Progress Bar Function
 async def progress_bar(current, total, message):
     percent = (current / total) * 100 if total > 0 else 0
     progress = f"[{'█' * int(percent // 5)}{' ' * (20 - int(percent // 5))}]"
@@ -73,7 +73,7 @@ async def create_zip(bot, message):
         await message.reply("⚠️ You haven't uploaded any files. Send some files first!")
         return
 
-    await message.reply("⏳ Downloading files...")
+    processing_message = await message.reply("⏳ Downloading files...")
 
     # Create ZIP
     zip_filename = f"user_{user_id}.zip"
@@ -81,8 +81,8 @@ async def create_zip(bot, message):
         zip_path = os.path.join(temp_dir, zip_filename)
         with ZipFile(zip_path, "w") as zipf:
             for file in files:
-                file_path = await bot.download_media(file["file_id"], progress=progress_bar)
-                zipf.write(file_path, file["file_name"])
+                file_path = await bot.download_media(file["file_id"], file_name=file["file_name"], progress=progress_bar, progress_args=(processing_message,))
+                zipf.write(file_path, os.path.basename(file_path))  # Fix: Ensure correct file writing
 
         await message.reply_document(zip_path, caption="✅ Here is your ZIP file!")
     
