@@ -25,10 +25,24 @@ bot = Client("zip_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 user_files = {}
 
 # Progress Bar Function
-async def progress_bar(current, total, message):
-    percent = (current / total) * 100 if total > 0 else 0
+async def progress_bar(current, total, message, start_time):
+    if total == 0:
+        return
+    
+    percent = (current / total) * 100
+    elapsed_time = (datetime.now() - start_time).total_seconds()
+    speed = current / elapsed_time if elapsed_time > 0 else 0
+    remaining_time = (total - current) / speed if speed > 0 else 0
+
     progress = f"[{'█' * int(percent // 5)}{' ' * (20 - int(percent // 5))}]"
-    text = f"⏳ Downloading... {percent:.2f}%\n{progress}"
+    text = (
+        f"⏳ Downloading... {percent:.2f}%\n"
+        f"{progress}\n"
+        f"📥 Downloaded: {current / (1024 * 1024):.2f} MB / {total / (1024 * 1024):.2f} MB\n"
+        f"🚀 Speed: {speed / (1024 * 1024):.2f} MB/s\n"
+        f"⌛ Estimated Time: {remaining_time:.2f} sec"
+    )
+
     await message.edit(text)
 
 # Command to start the bot
@@ -81,7 +95,8 @@ async def create_zip(bot, message):
         zip_path = os.path.join(temp_dir, zip_filename)
         with ZipFile(zip_path, "w") as zipf:
             for file in files:
-                file_path = await bot.download_media(file["file_id"], file_name=file["file_name"], progress=progress_bar, progress_args=(processing_message,))
+                start_time = datetime.now()
+                file_path = await bot.download_media(file["file_id"], file_name=file["file_name"], progress=progress_bar, progress_args=(processing_message, start_time))
                 zipf.write(file_path, os.path.basename(file_path))  # Fix: Ensure correct file writing
 
         await message.reply_document(zip_path, caption="✅ Here is your ZIP file!")
