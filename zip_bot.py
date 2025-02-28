@@ -96,7 +96,18 @@ async def create_zip(bot, message):
         with ZipFile(zip_path, "w") as zipf:
             for file in files:
                 start_time = datetime.now()
-                file_path = await bot.download_media(file["file_id"], file_name=file["file_name"], progress=progress_bar, progress_args=(processing_message, start_time))
+                
+                # Fix: Wait until full file is downloaded
+                file_path = None
+                while file_path is None:
+                    try:
+                        file_path = await bot.download_media(
+                            file["file_id"], file_name=file["file_name"],
+                            progress=progress_bar, progress_args=(processing_message, start_time)
+                        )
+                    except Exception as e:
+                        print(f"Retrying download due to error: {e}")
+
                 zipf.write(file_path, os.path.basename(file_path))  # Fix: Ensure correct file writing
 
         await message.reply_document(zip_path, caption="✅ Here is your ZIP file!")
