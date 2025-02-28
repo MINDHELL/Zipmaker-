@@ -26,7 +26,7 @@ user_files = {}
 
 # Function to show a progress bar
 async def progress_bar(current, total, message):
-    percent = (current / total) * 100
+    percent = (current / total) * 100 if total > 0 else 0
     progress = f"[{'█' * int(percent // 5)}{' ' * (20 - int(percent // 5))}]"
     text = f"⏳ Downloading... {percent:.2f}%\n{progress}"
     await message.edit(text)
@@ -37,15 +37,20 @@ async def start(bot, message):
     await message.reply("👋 Send me videos, photos, or documents to zip!\n\nUse `/done` when you're ready.")
 
 # Function to collect files
-@bot.on_message(filters.document | filters.video | filters.photo)
+@bot.on_message(filters.document | filters.video)
 async def collect_files(bot, message):
     user_id = message.from_user.id
+
+    file_type = "document" if message.document else "video"
+    file_id = message.document.file_id if message.document else message.video.file_id
+    file_name = message.document.file_name if message.document else f"video_{datetime.now().timestamp()}.mp4"
 
     # Store user files in MongoDB
     file_info = {
         "user_id": user_id,
-        "file_id": message.document.file_id if message.document else message.video.file_id if message.video else message.photo.file_id,
-        "file_name": message.document.file_name if message.document else f"file_{datetime.now().timestamp()}.jpg",
+        "file_id": file_id,
+        "file_name": file_name,
+        "file_type": file_type,
     }
     files_collection.insert_one(file_info)
 
@@ -54,7 +59,7 @@ async def collect_files(bot, message):
         user_files[user_id] = []
     user_files[user_id].append(file_info)
 
-    await message.reply(f"📂 File **{file_info['file_name']}** saved!\nSend more or use `/done` to zip.")
+    await message.reply(f"📂 File **{file_name}** saved!\nSend more or use `/done` to zip.")
 
 # Command to finish and create ZIP
 @bot.on_message(filters.command("done"))
@@ -68,7 +73,7 @@ async def create_zip(bot, message):
         await message.reply("⚠️ You haven't uploaded any files. Send some files first!")
         return
 
-    await message.reply("⏳ Preparing to download files...")
+    await message.reply("⏳ Downloading files...")
 
     # Create ZIP
     zip_filename = f"user_{user_id}.zip"
