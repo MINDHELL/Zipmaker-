@@ -17,6 +17,7 @@ MONGO_URL = "mongodb+srv://aarshhub:6L1PAPikOnAIHIRA@cluster0.6shiu.mongodb.net/
 mongo_client = MongoClient(MONGO_URL)
 db = mongo_client["zip_bot"]
 files_collection = db["files"]
+zip_name_collection = db["zip_names"]
 
 # Initialize Bot
 bot = Client("zip_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -48,7 +49,7 @@ async def progress_bar(current, total, message, start_time):
 # Command to start the bot
 @bot.on_message(filters.command("start"))
 async def start(bot, message):
-    await message.reply("👋 Send me videos, photos, or documents to zip!\n\nUse `/done` when you're ready.")
+    await message.reply("👋 Send me videos, photos, or documents to zip!\n\nUse `/done` when you're ready.\n\n🔄 To rename a file: `/rename oldname newname`\n🔄 To set ZIP name: `/setzip MyArchive.zip`")
 
 # Function to collect files
 @bot.on_message(filters.document | filters.video)
@@ -75,6 +76,50 @@ async def collect_files(bot, message):
 
     await message.reply(f"📂 File **{file_name}** saved!\nSend more or use `/done` to zip.")
 
+# Command to rename files
+@bot.on_message(filters.command("rename"))
+async def rename_file(bot, message):
+    user_id = message.from_user.id
+    args = message.text.split(" ", 2)
+
+    if len(args) < 3:
+        await message.reply("⚠️ Incorrect format!\nUse: `/rename oldname newname`")
+        return
+
+    old_name, new_name = args[1], args[2]
+
+    # Update file name in MongoDB
+    result = files_collection.update_one(
+        {"user_id": user_id, "file_name": old_name},
+        {"$set": {"file_name": new_name}}
+    )
+
+    if result.modified_count == 0:
+        await message.reply("⚠️ File not found!")
+    else:
+        await message.reply(f"✅ Renamed `{old_name}` to `{new_name}`!")
+
+# Command to set a custom ZIP file name
+@bot.on_message(filters.command("setzip"))
+async def set_zip_name(bot, message):
+    user_id = message.from_user.id
+    args = message.text.split(" ", 1)
+
+    if len(args) < 2:
+        await message.reply("⚠️ Incorrect format!\nUse: `/setzip MyCustomName.zip`")
+        return
+
+    zip_name = args[1]
+
+    # Store ZIP name in MongoDB
+    zip_name_collection.update_one(
+        {"user_id": user_id},
+        {"$set": {"zip_name": zip_name}},
+        upsert=True
+    )
+
+    await message.reply(f"✅ ZIP name set to `{zip_name}`")
+
 # Command to finish and create ZIP
 @bot.on_message(filters.command("done"))
 async def create_zip(bot, message):
@@ -87,10 +132,13 @@ async def create_zip(bot, message):
         await message.reply("⚠️ You haven't uploaded any files. Send some files first!")
         return
 
+    # Get user's custom ZIP name
+    zip_data = zip_name_collection.find_one({"user_id": user_id})
+    zip_filename = zip_data["zip_name"] if zip_data else f"user_{user_id}.zip"
+
     processing_message = await message.reply("⏳ Downloading files...")
 
     # Create ZIP
-    zip_filename = f"user_{user_id}.zip"
     with tempfile.TemporaryDirectory() as temp_dir:
         zip_path = os.path.join(temp_dir, zip_filename)
         with ZipFile(zip_path, "w") as zipf:
@@ -102,7 +150,7 @@ async def create_zip(bot, message):
                 while file_path is None:
                     try:
                         file_path = await bot.download_media(
-                            file["file_id"], file_name=file["file_name"],
+                            file["file_id"], file_name=os.path.join(temp_dir, file["file_name"]),
                             progress=progress_bar, progress_args=(processing_message, start_time)
                         )
                     except Exception as e:
@@ -110,10 +158,11 @@ async def create_zip(bot, message):
 
                 zipf.write(file_path, os.path.basename(file_path))  # Fix: Ensure correct file writing
 
-        await message.reply_document(zip_path, caption="✅ Here is your ZIP file!")
+        await message.reply_document(zip_path, caption=f"✅ Here is your ZIP file: `{zip_filename}`")
     
     # Clear stored files
     files_collection.delete_many({"user_id": user_id})
+    zip_name_collection.delete_one({"user_id": user_id})
     user_files.pop(user_id, None)
 
 # Run Bot
