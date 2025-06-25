@@ -10,7 +10,7 @@ from pymongo import MongoClient
 # Telegram Bot API Details
 API_ID = "27788368"  # Replace with your API ID
 API_HASH = "9df7e9ef3d7e4145270045e5e43e1081"  # Replace with your API Hash
-BOT_TOKEN = "8064879322:AAH4Uv8ZJbHfDZRBnre_Uf4D-ew-Q8SCinc"  # Replace with your bot token
+BOT_TOKEN = "8064879322:AAHvYtmZRsRamwHqhgUbXW-yZ5rjHhwdE4A"  # Replace with your bot token
 MONGO_URL = "mongodb+srv://aarshhub:6L1PAPikOnAIHIRA@cluster0.6shiu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"  # Replace with your MongoDB URL
 
 # MongoDB Setup
