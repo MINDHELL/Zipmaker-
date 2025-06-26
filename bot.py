@@ -54,8 +54,31 @@ def format_status(current, total, speed, eta):
 
 async def download_with_progress(msg: Message, user_dir: Path, reply: Message):
     start = time.time()
-    total_size = msg.document.file_size if msg.document else None
-    file_path = None
+
+    # Determine media object and filename
+    media = None
+    file_name = None
+    file_size = None
+
+    if msg.document:
+        media = msg.document
+        file_name = msg.document.file_name
+        file_size = msg.document.file_size
+    elif msg.video:
+        media = msg.video
+        file_name = msg.video.file_name
+        file_size = msg.video.file_size
+    elif msg.audio:
+        media = msg.audio
+        file_name = msg.audio.file_name
+        file_size = msg.audio.file_size
+    elif msg.voice:
+        media = msg.voice
+        file_name = "voice.ogg"
+        file_size = msg.voice.file_size
+    else:
+        file_name = f"{msg.id}"
+        file_size = 0  # Unknown size fallback
 
     async def progress(current, total):
         elapsed = time.time() - start
@@ -67,17 +90,22 @@ async def download_with_progress(msg: Message, user_dir: Path, reply: Message):
 
         try:
             await reply.edit_text(
-                f"📥 Downloading `{msg.document.file_name}` to my server\n\n"
+                f"📥 Downloading `{file_name}` to my server\n\n"
                 f"{progress_bar}\n{status}"
             )
         except Exception:
-            pass  # Ignore rapid edit errors
+            pass  # Prevent flood wait
 
-    file_path = await msg.download(
-        file_name=user_dir / msg.document.file_name,
-        progress=progress,
-        progress_args=()
-    )
+    try:
+        file_path = await msg.download(
+            file_name=user_dir / file_name,
+            progress=progress,
+            progress_args=()
+        )
+    except Exception as e:
+        await reply.edit_text(f"❌ Failed to download `{file_name}`:\n`{e}`")
+        return None
+
     return file_path
 
 
