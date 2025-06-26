@@ -7,7 +7,6 @@ from datetime import datetime
 from pyrogram import Client, filters
 from pymongo import MongoClient
 import threading
-from health_check import start_health_check
 from flask import Flask
 
 # Telegram Bot API Details
