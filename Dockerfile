@@ -1,17 +1,30 @@
-# Use Python base image
-FROM python:3.9
 
-# Set working directory
+# Use official Python base image
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    TZ=UTC
+
+# Create app directory
 WORKDIR /app
 
-# Copy all files
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    unzip \
+    gcc \
+    libffi-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy bot source code
 COPY . .
 
-# Install dependencies
-RUN pip install -r requirements.txt
+EXPOSE 8080
 
-# Expose port 8000 for health checks
-EXPOSE 8000
-
-# Run bot and health check server in parallel
-CMD python zip_bot.py & python server.py
+# Default command to run the bot
+CMD ["python", "bot.py"]
