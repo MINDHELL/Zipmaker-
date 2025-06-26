@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from shutil import rmtree
 import threading
 from health_check import start_health_check
+from utils import download_files, add_to_zip
 
 load_dotenv()
 
@@ -55,16 +56,21 @@ async def zip_handler(client, message: Message):
     if len(args) < 2:
         return await message.reply("❗ Usage: /zip <filename> [password]")
 
-    zip_name = args[1]
+    zip_name = args[1].replace(".zip", "")
     password = args[2] if len(args) > 2 else None
     uid = message.from_user.id
 
     if uid not in user_tasks or not user_tasks[uid]:
         return await message.reply("❗ No files found. Use /add and send files first.")
 
+    # Create user dir and define zip path
     user_dir = STORAGE / str(uid)
     user_dir.mkdir(parents=True, exist_ok=True)
     zip_path = user_dir / f"{zip_name}.zip"
+
+    # Clean existing zip
+    if zip_path.exists():
+        zip_path.unlink()
 
     await message.reply("📦 Downloading and zipping...")
 
@@ -73,13 +79,18 @@ async def zip_handler(client, message: Message):
 
     for msg in user_tasks[uid]:
         media_name = rename_map.get(msg.id)
-        file_path = await msg.download(file_name=user_dir / (media_name or None))
-        add_to_zip(zip_path, Path(file_path), password=password)
-        progress.update(1)
+        file_path = await msg.download(
+            file_name=user_dir / media_name if media_name else None
+        )
+        if file_path:
+            add_to_zip(zip_path, Path(file_path), password=password)
+            progress.update(1)
 
     progress.close()
 
     await message.reply_document(zip_path, caption="✅ Zipped and ready!")
+    
+    # Clean up user files and memory
     rmtree(user_dir, ignore_errors=True)
     user_tasks.pop(uid, None)
     rename_map.clear()
