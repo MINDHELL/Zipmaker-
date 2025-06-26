@@ -167,22 +167,12 @@ async def create_zip(bot, message):
     zip_name_collection.delete_one({"user_id": user_id})
     user_files.pop(user_id, None)
 
-# Add this at the very end of your bot.py
-import threading
-from flask import Flask
-
-def run_dummy_server():
-    app = Flask("health")
-
-    @app.route("/")
-    def health():
-        return "OK", 200
-
-    app.run(host="0.0.0.0", port=8080)
-
-threading.Thread(target=run_dummy_server).start()
-
-# ✅ Run the bot
 if __name__ == "__main__":
+    # Start Flask health check server
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+
+    # Start custom health check thread (if needed)
     threading.Thread(target=start_health_check, daemon=True).start()
+
+    # 🚀 Start Pyrogram bot in main thread to keep process alive
     bot.run()
