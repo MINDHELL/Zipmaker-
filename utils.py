@@ -1,25 +1,55 @@
+from typing import AsyncGenerator
 from pathlib import Path
 from zipfile import ZipFile, ZIP_DEFLATED
+import mimetypes
+from tqdm.asyncio import tqdm
+
+from pyrogram.types import Message
 
 
-def add_to_zip(zip_path: Path, file_path: Path, password: str = None):
+async def download_files(
+    msgs: list[Message],
+    root: Path,
+) -> AsyncGenerator[Path, None]:
     """
-    Adds a file to the zip archive. If password is provided,
-    it will be set for the file (only compatible with some extractors).
+    Downloads media from a list of messages.
 
     Args:
-        zip_path: Path to the zip file.
-        file_path: Path to the file to add.
-        password: Optional password to protect the zip.
+        msgs: List of Pyrogram messages.
+        root: Directory to save downloaded files.
+
+    Yields:
+        Path of each downloaded file.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+
+    async for msg in tqdm(msgs, desc="Downloading", unit="file"):
+        media_name = msg.document.file_name if msg.document else None
+
+        if not media_name:
+            # Guess file extension from MIME type
+            mime_type = msg.document.mime_type if msg.document else None
+            ext = mimetypes.guess_extension(mime_type) or ''
+            media_name = f"file_{msg.id}{ext}"
+
+        file_path = await msg.download(file_name=root / media_name)
+
+        if file_path:
+            yield Path(file_path)
+
+
+def add_to_zip(zip_path: Path, file_path: Path, password: str | None = None):
+    """
+    Adds a file to a ZIP archive.
+
+    Args:
+        zip_path: Target ZIP file path.
+        file_path: File to add.
+        password: Optional password for encryption.
     """
     mode = 'a' if zip_path.exists() else 'w'
 
-    with ZipFile(zip_path, mode, ZIP_DEFLATED) as zf:
-        arcname = file_path.name
-
+    with ZipFile(zip_path, mode, compression=ZIP_DEFLATED) as zipf:
         if password:
-            # Standard zipfile doesn't support per-file password encryption,
-            # but we can set a password globally (less secure).
-            zf.setpassword(password.encode())
-
-        zf.write(file_path, arcname=arcname)
+            zipf.setpassword(password.encode())
+        zipf.write(file_path, arcname=file_path.name)
