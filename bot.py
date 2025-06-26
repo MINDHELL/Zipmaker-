@@ -179,12 +179,20 @@ async def zip_handler(client, message: Message):
     await zip_progress_msg.edit_text("✅ Zipping complete! Sending zip file...")
 
     await message.reply_document(zip_path, caption="✅ Your zip is ready!")
+    
+    # Cleanup
+    asyncio.create_task(auto_cleanup(uid, delay=600))  # 10 mins
 
+
+async def auto_cleanup(uid: int, delay: int = 600):
+    await asyncio.sleep(delay)
+    user_dir = STORAGE / str(uid)
     rmtree(user_dir, ignore_errors=True)
     user_tasks.pop(uid, None)
     rename_map.clear()
-
-
+    
+    
+    
 @app.on_message(filters.command("preview"))
 async def preview_handler(client, message: Message):
     uid = message.from_user.id
