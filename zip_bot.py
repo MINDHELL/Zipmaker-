@@ -6,6 +6,8 @@ from zipfile import ZipFile
 from datetime import datetime
 from pyrogram import Client, filters
 from pymongo import MongoClient
+import threading
+from health_check import start_health_check
 
 # Telegram Bot API Details
 API_ID = "27788368"  # Replace with your API ID
@@ -165,5 +167,7 @@ async def create_zip(bot, message):
     zip_name_collection.delete_one({"user_id": user_id})
     user_files.pop(user_id, None)
 
-# Run Bot
-bot.run()
+# ✅ Run the bot
+if __name__ == "__main__":
+    threading.Thread(target=start_health_check, daemon=True).start()
+    bot.run()
