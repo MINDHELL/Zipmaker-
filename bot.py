@@ -78,13 +78,14 @@ async def zip_handler(client, message: Message):
     progress = tqdm(total=total, desc="Zipping", unit="file")
 
     for msg in user_tasks[uid]:
-        media_name = rename_map.get(msg.id)
-        file_path = await msg.download(
-            file_name=user_dir / media_name if media_name else None
-        )
-        if file_path:
-            add_to_zip(zip_path, Path(file_path), password=password)
-            progress.update(1)
+    media_name = rename_map.get(msg.id)
+    default_name = f"{msg.id}"  # fallback name
+    file_path = await msg.download(
+        file_name=user_dir / (media_name or default_name)
+    )
+    if file_path:
+        add_to_zip(zip_path, Path(file_path), password=password)
+        progress.update(1)
 
     progress.close()
 
