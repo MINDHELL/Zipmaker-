@@ -108,4 +108,4 @@ async def cancel_handler(client, message: Message):
 # ✅ **Run the Bot**
 if __name__ == "__main__":
     threading.Thread(target=start_health_check, daemon=True).start()
-    bot.run()
+    app.run()
