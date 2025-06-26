@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 from zipfile import ZipFile
 from pyrogram import Client, filters
@@ -18,41 +19,80 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8064879322:AAHvYtmZRsRamwHqhgUbXW-yZ5rjHhwdE
 
 app = Client("zipbot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# In-memory task storage
 user_tasks: dict[int, list[Message]] = {}
 rename_map: dict[int, str] = {}
 STORAGE = Path("downloads/")
 
 
-@app.on_message(filters.command(["start", "help"]))
-async def start_handler(client, message: Message):
-    await message.reply(
-        "👋 **Welcome to Zip Bot!**\n\n"
-        "**How to use:**\n"
-        "1️⃣ Send /add to begin\n"
-        "2️⃣ Upload all files\n"
-        "3️⃣ Use /zip `<name>` or /done to get a zip\n"
-        "✏️ Reply to a file with `name: new_filename.ext` to rename\n"
-        "📄 Use /list to view files\n"
-        "❌ Use /cancel to reset\n"
-        "\n🔐 `/zip <name> [password]` — optional password",
-        quote=True
+def format_bytes(size):
+    # 1024 -> 1 KB, 1024^2 -> 1 MB
+    power = 2**10
+    n = 0
+    power_labels = ["B", "KB", "MB", "GB", "TB"]
+    while size >= power and n < len(power_labels) - 1:
+        size /= power
+        n += 1
+    return f"{size:.2f} {power_labels[n]}"
+
+
+def format_progress_bar(current, total, width=20):
+    progress = current / total
+    filled = int(width * progress)
+    bar = "●" * filled + "○" * (width - filled)
+    return f"[{bar}]"
+
+
+def format_status(current, total, speed, eta):
+    percent = (current / total) * 100
+    return (
+        f"◌Progress😉:〘 {percent:.2f}% 〙\n"
+        f"Done: 〘{format_bytes(current)} of {format_bytes(total)}〙\n"
+        f"◌Speed🚀:〘 {format_bytes(speed)}/s 〙\n"
+        f"◌Time Left⏳:〘 {int(eta)}s 〙"
     )
+
+
+async def download_with_progress(msg: Message, user_dir: Path, reply: Message):
+    start = time.time()
+    total_size = msg.document.file_size if msg.document else None
+    file_path = None
+
+    async def progress(current, total):
+        elapsed = time.time() - start
+        speed = current / elapsed if elapsed > 0 else 0
+        eta = (total - current) / speed if speed > 0 else 0
+
+        progress_bar = format_progress_bar(current, total)
+        status = format_status(current, total, speed, eta)
+
+        try:
+            await reply.edit_text(
+                f"📥 Downloading `{msg.document.file_name}` to my server\n\n"
+                f"{progress_bar}\n{status}"
+            )
+        except Exception:
+            pass  # Ignore rapid edit errors
+
+    file_path = await msg.download(
+        file_name=user_dir / msg.document.file_name,
+        progress=progress,
+        progress_args=()
+    )
+    return file_path
 
 
 @app.on_message(filters.command("add"))
 async def add_handler(client, message: Message):
     user_tasks[message.from_user.id] = []
-    await message.reply("📥 Send me the files you want to zip.")
+    await message.reply("✅ Now send me the files you want to zip.")
 
 
 @app.on_message(filters.media & filters.private)
 async def media_handler(client, message: Message):
-    uid = message.from_user.id
-    if uid not in user_tasks:
+    if message.from_user.id not in user_tasks:
         return await message.reply("❗ Use /add first.")
-    user_tasks[uid].append(message)
-    await message.reply("✅ File added. Use /zip or /done to finish.")
+    user_tasks[message.from_user.id].append(message)
+    await message.reply("📥 File added. Use /zip <name> [password] to finish.")
 
 
 @app.on_message(filters.reply & filters.regex(r'^name:\s*(.+)'))
@@ -89,7 +129,9 @@ async def zip_handler(client, message: Message):
     for msg in user_tasks[uid]:
         media_name = rename_map.get(msg.id)
         default_name = msg.document.file_name if msg.document else f"{msg.id}"
-        file_path = await msg.download(file_name=user_dir / (media_name or default_name))
+        reply = await message.reply(f"📤 Downloading `{default_name}`")
+        file_path = await download_with_progress(msg, user_dir, reply)
+
         if file_path:
             add_to_zip(zip_path, Path(file_path), password=password)
             progress.update(1)
@@ -97,18 +139,31 @@ async def zip_handler(client, message: Message):
     progress.close()
     await message.reply_document(zip_path, caption="✅ Your zip is ready!")
 
-    # Cleanup
     rmtree(user_dir, ignore_errors=True)
     user_tasks.pop(uid, None)
     rename_map.clear()
+
+
+@app.on_message(filters.command("preview"))
+async def preview_handler(client, message: Message):
+    uid = message.from_user.id
+    if uid not in user_tasks or not user_tasks[uid]:
+        return await message.reply("📂 No files added.")
+
+    text = "📝 **Preview of Files to be Zipped:**\n\n"
+    for i, msg in enumerate(user_tasks[uid], 1):
+        name = rename_map.get(msg.id, msg.document.file_name if msg.document else "Unnamed")
+        text += f"{i}. `{name}`\n"
+
+    await message.reply(text)
 
 
 @app.on_message(filters.command("list"))
 async def list_handler(client, message: Message):
     uid = message.from_user.id
     if uid not in user_tasks or not user_tasks[uid]:
-        return await message.reply("📂 No files added yet.")
-    text = "📄 **Files Added:**\n"
+        return await message.reply("📂 No files added.")
+    text = "📄 Files added:\n"
     for i, msg in enumerate(user_tasks[uid], 1):
         name = rename_map.get(msg.id, msg.document.file_name if msg.document else "Unnamed")
         text += f"{i}. {name}\n"
@@ -120,9 +175,10 @@ async def cancel_handler(client, message: Message):
     uid = message.from_user.id
     user_tasks.pop(uid, None)
     rename_map.clear()
-    await message.reply("❌ All files cleared. Use /add to start again.")
+    await message.reply("❌ Task cancelled. Use /add to start over.")
 
 
+# ✅ Run the bot
 if __name__ == "__main__":
     threading.Thread(target=start_health_check, daemon=True).start()
     app.run()
