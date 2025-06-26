@@ -1,21 +1,10 @@
-import socket
-import threading
+from flask import Flask
 
-HOST = "0.0.0.0"
-PORT = 8080
+app = Flask(__name__)
 
-def start_health_check():
-    """Start a TCP health check server to prevent bot shutdown on Koyeb."""
-    def run_server():
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
-            server.bind((HOST, PORT))
-            server.listen(5)
-            print(f"✅ Health check running on port {PORT}")
+@app.route("/")
+def index():
+    return "OK", 200
 
-            while True:
-                conn, _ = server.accept()
-                conn.sendall(b"HTTP/1.1 200 OK\n\nBot is running")
-                conn.close()
-
-    thread = threading.Thread(target=run_server, daemon=True)
-    thread.start()
+def run_dummy_server():
+    app.run(host="0.0.0.0", port=8000)
