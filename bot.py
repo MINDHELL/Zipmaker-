@@ -122,21 +122,34 @@ async def zip_handler(client, message: Message):
     if zip_path.exists():
         zip_path.unlink()
 
-    await message.reply("📦 Downloading and zipping...")
+    await message.reply("📥 Downloading and preparing to zip...")
 
-    progress = tqdm(total=len(user_tasks[uid]), desc="Zipping", unit="file")
+    zip_progress_msg = await message.reply("📦 Starting zipping process...")
 
-    for msg in user_tasks[uid]:
+    total_files = len(user_tasks[uid])
+    zipped_count = 0
+
+    for index, msg in enumerate(user_tasks[uid], 1):
         media_name = rename_map.get(msg.id)
         default_name = msg.document.file_name if msg.document else f"{msg.id}"
         reply = await message.reply(f"📤 Downloading `{default_name}`")
         file_path = await download_with_progress(msg, user_dir, reply)
 
         if file_path:
+            current_name = Path(file_path).name
             add_to_zip(zip_path, Path(file_path), password=password)
-            progress.update(1)
+            zipped_count += 1
 
-    progress.close()
+            progress_bar = format_progress_bar(zipped_count, total_files)
+            await zip_progress_msg.edit_text(
+                f"🗜️ Zipping files...\n\n"
+                f"🔹 File: `{current_name}`\n"
+                f"🔢 {zipped_count}/{total_files} files zipped\n"
+                f"{progress_bar}"
+            )
+
+    await zip_progress_msg.edit_text("✅ Zipping complete! Sending zip file...")
+
     await message.reply_document(zip_path, caption="✅ Your zip is ready!")
 
     rmtree(user_dir, ignore_errors=True)
