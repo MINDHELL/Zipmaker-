@@ -167,6 +167,18 @@ async def create_zip(bot, message):
     zip_name_collection.delete_one({"user_id": user_id})
     user_files.pop(user_id, None)
 
+
+
+# === Flask Health Check Server ===
+def run_dummy_server():
+    app = Flask("health")
+
+    @app.route("/")
+    def health():
+        return "OK", 200
+
+    app.run(host="0.0.0.0", port=8080)
+
 if __name__ == "__main__":
     # Start Flask health check server
     threading.Thread(target=run_dummy_server, daemon=True).start()
