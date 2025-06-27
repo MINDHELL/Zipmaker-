@@ -30,7 +30,6 @@ user_files = {}
 async def progress_bar(current, total, message, start_time):
     if total == 0:
         return
-
     percent = (current / total) * 100
     elapsed_time = (datetime.now() - start_time).total_seconds()
     speed = current / elapsed_time if elapsed_time > 0 else 0
@@ -50,14 +49,9 @@ async def progress_bar(current, total, message, start_time):
 # /start command
 @bot.on_message(filters.command("start"))
 async def start(bot, message):
-    await message.reply(
-        "👋 Send me videos, photos, or documents to zip!\n\n"
-        "Use `/done` when you're ready.\n"
-        "🔄 To rename a file: `/rename oldname newname`\n"
-        "🔄 To set ZIP name: `/setzip MyArchive.zip`"
-    )
+    await message.reply("👋 Send me videos, photos, or documents to zip!\n\nUse `/done` when you're ready.\n\n🔄 To rename a file: `/rename oldname newname`\n🔄 To set ZIP name: `/setzip MyArchive.zip`")
 
-# File collection handler
+# Collect files
 @bot.on_message(filters.document | filters.video)
 async def collect_files(bot, message):
     user_id = message.from_user.id
@@ -71,13 +65,15 @@ async def collect_files(bot, message):
         "file_name": file_name,
         "file_type": file_type,
     }
-
     files_collection.insert_one(file_info)
-    user_files.setdefault(user_id, []).append(file_info)
+
+    if user_id not in user_files:
+        user_files[user_id] = []
+    user_files[user_id].append(file_info)
 
     await message.reply(f"📂 File **{file_name}** saved!\nSend more or use `/done` to zip.")
 
-# Rename file command
+# Rename file
 @bot.on_message(filters.command("rename"))
 async def rename_file(bot, message):
     user_id = message.from_user.id
@@ -119,28 +115,28 @@ async def set_zip_name(bot, message):
 
     await message.reply(f"✅ ZIP name set to `{zip_name}`")
 
-# Done command to create zip
+# Create ZIP
 @bot.on_message(filters.command("done"))
 async def create_zip(bot, message):
     user_id = message.from_user.id
     files = list(files_collection.find({"user_id": user_id}))
 
     if not files:
-        await message.reply("⚠️ You haven't uploaded any files.")
+        await message.reply("⚠️ You haven't uploaded any files. Send some files first!")
         return
 
     zip_data = zip_name_collection.find_one({"user_id": user_id})
     zip_filename = zip_data["zip_name"] if zip_data else f"user_{user_id}.zip"
+
     processing_message = await message.reply("⏳ Downloading files...")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         zip_path = os.path.join(temp_dir, zip_filename)
-
         with ZipFile(zip_path, "w") as zipf:
             for file in files:
                 start_time = datetime.now()
-
-                while True:
+                file_path = None
+                while file_path is None:
                     try:
                         file_path = await bot.download_media(
                             file["file_id"],
@@ -148,10 +144,8 @@ async def create_zip(bot, message):
                             progress=progress_bar,
                             progress_args=(processing_message, start_time)
                         )
-                        break
                     except Exception as e:
                         print(f"Retrying download due to error: {e}")
-                        await asyncio.sleep(1)
 
                 zipf.write(file_path, os.path.basename(file_path))
 
@@ -161,17 +155,25 @@ async def create_zip(bot, message):
     zip_name_collection.delete_one({"user_id": user_id})
     user_files.pop(user_id, None)
 
-# === Health Check Server ===
+# === Flask Health Check Server ===
 def run_dummy_server():
-    app = Flask("health")
+    app = Flask("health_check")
 
     @app.route("/")
     def health():
         return "OK", 200
 
-    app.run(host="0.0.0.0", port=8080)
+    app.run(host="0.0.0.0", port=8000)
 
-# === Entry Point ===
+# === Background health log thread ===
+def start_health_check():
+    import time
+    while True:
+        print("[HEALTH CHECK] Bot is alive.")
+        time.sleep(60)
+
+# === Start the bot ===
 if __name__ == "__main__":
     threading.Thread(target=run_dummy_server, daemon=True).start()
+    threading.Thread(target=start_health_check, daemon=True).start()
     bot.run()
