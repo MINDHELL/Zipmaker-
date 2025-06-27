@@ -1,9 +1,8 @@
 import os
-import asyncio
 import tempfile
 import threading
-from pyzipper import AESZipFile
 from datetime import datetime
+from pyzipper import AESZipFile
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pymongo import MongoClient
@@ -15,7 +14,7 @@ API_HASH = "9df7e9ef3d7e4145270045e5e43e1081"
 BOT_TOKEN = "8064879322:AAHvYtmZRsRamwHqhgUbXW-yZ5rjHhwdE4A"
 MONGO_URL = "mongodb+srv://aarshhub:6L1PAPikOnAIHIRA@cluster0.6shiu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
-# MongoDB Setup
+# MongoDB Setup (still available if needed)
 mongo_client = MongoClient(MONGO_URL)
 db = mongo_client["zip_bot"]
 files_collection = db["files"]
@@ -23,21 +22,21 @@ files_collection = db["files"]
 # Initialize Bot
 bot = Client("zip_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Dictionary to track zip sessions
+# In-memory sessions: {user_id: {files, status, zip_name, password}}
 user_sessions = {}
 
-async def progress_bar(current, total, message: Message, start_time, prefix="Progress"):
+# Progress Bar Function
+async def progress_bar(current, total, message: Message, start_time, label="Progress"):
     if total == 0:
         return
     elapsed = (datetime.now() - start_time).total_seconds()
     speed = current / elapsed if elapsed > 0 else 0
     eta = (total - current) / speed if speed > 0 else 0
     percent = current * 100 / total
-
-    progress_str = "█" * int(percent / 5) + "░" * (20 - int(percent / 5))
+    bar = "█" * int(percent // 5) + "░" * (20 - int(percent // 5))
     text = (
-        f"📦 **{prefix}**\n"
-        f"`[{progress_str}]` {percent:.2f}%\n"
+        f"**{label}**\n"
+        f"`[{bar}]` {percent:.2f}%\n"
         f"📥 {current / 1024**2:.2f}MB / {total / 1024**2:.2f}MB\n"
         f"⚡ Speed: {speed / 1024**2:.2f} MB/s\n"
         f"⏳ ETA: {eta:.1f}s"
@@ -47,12 +46,14 @@ async def progress_bar(current, total, message: Message, start_time, prefix="Pro
     except:
         pass
 
+# /start command
 @bot.on_message(filters.command("start"))
-async def start_command(bot, message):
-    await message.reply("👋 Welcome! Use /zip to begin selecting files for zipping.")
+async def start(bot, message):
+    await message.reply("👋 Send /zip to begin collecting files to ZIP.\nUse /done when ready.")
 
+# /zip command: Begin collecting files
 @bot.on_message(filters.command("zip"))
-async def start_zip(bot, message):
+async def zip_command(bot, message):
     user_id = message.from_user.id
     user_sessions[user_id] = {
         "files": [],
@@ -60,50 +61,15 @@ async def start_zip(bot, message):
         "zip_name": None,
         "password": None
     }
-    await message.reply("📥 Please send the files (video, photo, or document) you want to include. Use /done when finished.")
+    await message.reply("📤 Send me videos, documents or photos.\nSend /done when finished.")
 
-@bot.on_message(filters.command("done"))
-async def done_collecting(bot, message):
-    user_id = message.from_user.id
-    session = user_sessions.get(user_id)
-    if not session or not session["files"]:
-        await message.reply("⚠️ You haven't added any files. Start with /zip")
-        return
-
-    user_sessions[user_id]["status"] = "awaiting_name"
-    await message.reply("📦 Please send the name you want for your ZIP file (e.g., `myfiles.zip`).")
-
-@bot.on_message(filters.text & ~filters.command(["start", "zip", "done"]))
-async def handle_text(bot, message):
-    user_id = message.from_user.id
-    session = user_sessions.get(user_id)
-    if not session:
-        return
-
-    if session["status"] == "awaiting_name":
-        zip_name = message.text.strip()
-        if not zip_name.endswith(".zip"):
-            zip_name += ".zip"
-        session["zip_name"] = zip_name
-        session["status"] = "awaiting_password"
-        await message.reply("🔐 (Optional) Send a password to protect your ZIP, or type `no` to skip.")
-
-    elif session["status"] == "awaiting_password":
-        password = message.text.strip()
-        if password.lower() != "no":
-            session["password"] = password
-        await create_and_send_zip(bot, message, session)
-        user_sessions.pop(user_id, None)
-
+# Handle files (video/photo/document)
 @bot.on_message(filters.document | filters.video | filters.photo)
 async def collect_files(bot, message):
     user_id = message.from_user.id
     session = user_sessions.get(user_id)
     if not session or session.get("status") != "collecting":
         return
-
-    file_id = None
-    file_name = None
 
     if message.document:
         file_id = message.document.file_id
@@ -114,20 +80,54 @@ async def collect_files(bot, message):
     elif message.photo:
         file_id = message.photo.file_id
         file_name = f"photo_{datetime.now().timestamp()}.jpg"
+    else:
+        return
 
-    session["files"].append({
-        "file_id": file_id,
-        "file_name": file_name
-    })
-    await message.reply(f"✅ File `{file_name}` added. Send more or /done when ready.")
+    session["files"].append({"file_id": file_id, "file_name": file_name})
+    await message.reply(f"✅ File `{file_name}` saved. Send more or /done to zip.")
 
+# /done command: Ask for zip name
+@bot.on_message(filters.command("done"))
+async def done_command(bot, message):
+    user_id = message.from_user.id
+    session = user_sessions.get(user_id)
+    if not session or not session["files"]:
+        await message.reply("⚠️ You haven't uploaded any files. Start with /zip.")
+        return
+
+    session["status"] = "awaiting_zipname"
+    await message.reply("📦 Please send the name you want for your ZIP file (e.g., `myfiles.zip`).")
+
+# Handle ZIP name and password
+@bot.on_message(filters.text & ~filters.command(["start", "zip", "done"]))
+async def handle_text(bot, message):
+    user_id = message.from_user.id
+    session = user_sessions.get(user_id)
+    if not session:
+        return
+
+    text = message.text.strip()
+
+    if session["status"] == "awaiting_zipname":
+        if not text.endswith(".zip"):
+            text += ".zip"
+        session["zip_name"] = text
+        session["status"] = "awaiting_password"
+        await message.reply("🔐 (Optional) Send a password to protect your ZIP, or type `no` to skip.")
+
+    elif session["status"] == "awaiting_password":
+        session["password"] = None if text.lower() == "no" else text
+        await create_and_send_zip(bot, message, session)
+        user_sessions.pop(user_id, None)
+
+# Create ZIP and send
 async def create_and_send_zip(bot, message, session):
     zip_name = session["zip_name"]
     password = session["password"]
     files = session["files"]
     valid_file_count = 0
 
-    progress_msg = await message.reply("⏳ Starting download and zip process...")
+    progress_msg = await message.reply("⏳ Starting download and ZIP creation...")
 
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -137,84 +137,58 @@ async def create_and_send_zip(bot, message, session):
                 if password:
                     zipf.setpassword(password.encode())
 
-                for file in files:
+                for f in files:
+                    file_name = f["file_name"]
+                    file_path = os.path.join(temp_dir, file_name)
                     start_time = datetime.now()
-                    filename = file["file_name"]
-                    filepath = os.path.join(temp_dir, filename)
-
                     try:
                         downloaded_path = await bot.download_media(
-                            file["file_id"],
-                            file_name=filepath,
+                            f["file_id"],
+                            file_name=file_path,
                             progress=progress_bar,
-                            progress_args=(progress_msg, start_time, f"Downloading `{filename}`")
+                            progress_args=(progress_msg, start_time, f"Downloading `{file_name}`")
                         )
+                        if downloaded_path and os.path.exists(downloaded_path):
+                            zipf.write(downloaded_path, arcname=os.path.basename(downloaded_path))
+                            valid_file_count += 1
                     except Exception as e:
-                        await progress_msg.edit(f"❌ Failed to download `{filename}`:\n`{e}`")
+                        await progress_msg.edit(f"❌ Failed downloading `{file_name}`: `{e}`")
                         continue
 
-                    if not downloaded_path or not os.path.exists(downloaded_path):
-                        await progress_msg.edit(f"⚠️ Skipping `{filename}` — not downloaded.")
-                        continue
-
-                    try:
-                        zipf.write(downloaded_path, arcname=os.path.basename(downloaded_path))
-                        valid_file_count += 1
-                    except Exception as e:
-                        await progress_msg.edit(f"❌ Failed to add `{filename}` to zip:\n`{e}`")
-                        continue
-
-            # Validate the final ZIP
             if not os.path.exists(zip_path) or os.path.getsize(zip_path) < 100 or valid_file_count == 0:
                 await progress_msg.edit("❌ Failed to create ZIP. No valid files were added.")
                 return
 
             await progress_msg.edit("📤 Uploading ZIP...")
             start_time = datetime.now()
-
             await message.reply_document(
                 zip_path,
-                caption=f"✅ Here is your ZIP file: `{zip_name}`",
+                caption=f"✅ Your ZIP file: `{zip_name}`",
                 progress=progress_bar,
                 progress_args=(progress_msg, start_time, "Uploading ZIP")
             )
 
     except Exception as e:
-        await progress_msg.edit(f"❌ Critical error:\n`{e}`")
-# Flask health check
+        await progress_msg.edit(f"❌ Critical error during ZIP creation:\n`{e}`")
+
+# Flask health check server
 def run_dummy_server():
     app = Flask("health_check")
-
     @app.route("/")
     def health():
         return "OK", 200
-
     app.run(host="0.0.0.0", port=8000)
 
+# Periodic health log
 def start_health_check():
     import time
     while True:
         print("[HEALTH CHECK] Bot is alive.")
         time.sleep(60)
 
+# Start bot
 if __name__ == "__main__":
-    print("✅ Booting ZIP bot...")
-
-    # Start Flask dummy server for health check
-    try:
-        threading.Thread(target=run_dummy_server, daemon=True).start()
-        print("✅ Flask server started on port 8000")
-    except Exception as e:
-        print("❌ Flask error:", e)
-
-    try:
-        threading.Thread(target=start_health_check, daemon=True).start()
-        print("✅ Health check logger started")
-    except Exception as e:
-        print("❌ Health logger error:", e)
-
-    try:
-        print("✅ Starting Pyrogram bot...")
-        bot.run()
-    except Exception as e:
-        print("❌ Bot failed:", e)
+    print("🚀 Starting bot...")
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+    threading.Thread(target=start_health_check, daemon=True).start()
+    bot.run()
