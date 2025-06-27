@@ -126,7 +126,7 @@ async def create_and_send_zip(bot, message, session):
     password = session["password"]
     files = session["files"]
 
-    progress_msg = await message.reply("⏳ Downloading files...")
+    progress_msg = await message.reply("⏳ Starting download...")
 
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -134,25 +134,44 @@ async def create_and_send_zip(bot, message, session):
             with AESZipFile(zip_path, 'w', compression=8, encryption=2) as zipf:
                 if password:
                     zipf.setpassword(password.encode())
+
                 for file in files:
                     start_time = datetime.now()
-                    file_path = await bot.download_media(
-                        file["file_id"],
-                        file_name=os.path.join(temp_dir, file["file_name"]),
-                        progress=progress_bar,
-                        progress_args=(progress_msg, start_time, "Downloading")
-                    )
-                    zipf.write(file_path, os.path.basename(file_path))
+                    file_path = None
+                    filename = file["file_name"]
 
-            await progress_msg.edit("📤 Uploading ZIP...")
+                    try:
+                        file_path = await bot.download_media(
+                            file["file_id"],
+                            file_name=os.path.join(temp_dir, filename),
+                            progress=progress_bar,
+                            progress_args=(progress_msg, start_time, f"Downloading {filename}")
+                        )
+                    except Exception as e:
+                        await progress_msg.edit(f"❌ Failed to download `{filename}`:\n`{e}`")
+                        continue
+
+                    if not file_path or not os.path.exists(file_path):
+                        await progress_msg.edit(f"⚠️ Skipping `{filename}` — file not downloaded properly.")
+                        continue
+
+                    try:
+                        zipf.write(file_path, arcname=os.path.basename(file_path))
+                    except Exception as e:
+                        await progress_msg.edit(f"❌ Error zipping `{filename}`:\n`{e}`")
+                        continue
+
+            await progress_msg.edit("📤 Uploading your ZIP file...")
             start_time = datetime.now()
-            await message.reply_document(zip_path, caption=f"✅ Your ZIP `{zip_name}` is ready!",
+            await message.reply_document(
+                zip_path,
+                caption=f"✅ Here is your ZIP file `{zip_name}`",
                 progress=progress_bar,
                 progress_args=(progress_msg, start_time, "Uploading")
             )
 
     except Exception as e:
-        await progress_msg.edit(f"❌ Error: {e}")
+        await progress_msg.edit(f"❌ Unexpected error:\n`{e}`")
 
 # Flask health check
 def run_dummy_server():
