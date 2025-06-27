@@ -6,3 +6,4 @@ garnet
 motor
 pymongo
 waitress
+pyzipper
