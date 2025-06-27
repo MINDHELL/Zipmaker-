@@ -8,28 +8,31 @@ from pyrogram import Client, filters
 from pymongo import MongoClient
 from flask import Flask
 
-# Telegram Bot API Details
+# === Telegram Bot API Details ===
 API_ID = "27788368"
 API_HASH = "9df7e9ef3d7e4145270045e5e43e1081"
 BOT_TOKEN = "8064879322:AAHvYtmZRsRamwHqhgUbXW-yZ5rjHhwdE4A"
 MONGO_URL = "mongodb+srv://aarshhub:6L1PAPikOnAIHIRA@cluster0.6shiu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
-# MongoDB Setup
+# === MongoDB Setup ===
 mongo_client = MongoClient(MONGO_URL)
 db = mongo_client["zip_bot"]
 files_collection = db["files"]
 zip_name_collection = db["zip_names"]
 
-# Initialize Bot
+# === Initialize Bot ===
 bot = Client("zip_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Dictionary to store user file data temporarily
+# === In-memory file tracker ===
 user_files = {}
 
-# Progress Bar Function
-async def progress_bar(current, total, message, start_time):
+# === Progress Bar Function ===
+async def progress_bar(current, total, *args):
+    message, start_time = args
+
     if total == 0:
         return
+
     percent = (current / total) * 100
     elapsed_time = (datetime.now() - start_time).total_seconds()
     speed = current / elapsed_time if elapsed_time > 0 else 0
@@ -41,17 +44,25 @@ async def progress_bar(current, total, message, start_time):
         f"{progress}\n"
         f"📥 Downloaded: {current / (1024 * 1024):.2f} MB / {total / (1024 * 1024):.2f} MB\n"
         f"🚀 Speed: {speed / (1024 * 1024):.2f} MB/s\n"
-        f"⌛ Estimated Time: {remaining_time:.2f} sec"
+        f"⌛ ETA: {remaining_time:.2f} sec"
     )
 
-    await message.edit(text)
+    try:
+        await message.edit(text)
+    except Exception:
+        pass  # In case message is deleted or edited elsewhere
 
-# /start command
+# === /start command ===
 @bot.on_message(filters.command("start"))
 async def start(bot, message):
-    await message.reply("👋 Send me videos, photos, or documents to zip!\n\nUse `/done` when you're ready.\n\n🔄 To rename a file: `/rename oldname newname`\n🔄 To set ZIP name: `/setzip MyArchive.zip`")
+    await message.reply(
+        "👋 Send me videos, photos, or documents to zip!\n\n"
+        "✅ When you're ready, use `/done`\n"
+        "✏️ Rename: `/rename oldname newname`\n"
+        "📦 Set ZIP name: `/setzip MyArchive.zip`"
+    )
 
-# Collect files
+# === Collect uploaded files ===
 @bot.on_message(filters.document | filters.video)
 async def collect_files(bot, message):
     user_id = message.from_user.id
@@ -73,14 +84,14 @@ async def collect_files(bot, message):
 
     await message.reply(f"📂 File **{file_name}** saved!\nSend more or use `/done` to zip.")
 
-# Rename file
+# === Rename uploaded file ===
 @bot.on_message(filters.command("rename"))
 async def rename_file(bot, message):
     user_id = message.from_user.id
     args = message.text.split(" ", 2)
 
     if len(args) < 3:
-        await message.reply("⚠️ Incorrect format!\nUse: `/rename oldname newname`")
+        await message.reply("⚠️ Format: `/rename oldname newname`")
         return
 
     old_name, new_name = args[1], args[2]
@@ -95,17 +106,17 @@ async def rename_file(bot, message):
     else:
         await message.reply(f"✅ Renamed `{old_name}` to `{new_name}`!")
 
-# Set ZIP name
+# === Set ZIP filename ===
 @bot.on_message(filters.command("setzip"))
 async def set_zip_name(bot, message):
     user_id = message.from_user.id
     args = message.text.split(" ", 1)
 
     if len(args) < 2:
-        await message.reply("⚠️ Incorrect format!\nUse: `/setzip MyCustomName.zip`")
+        await message.reply("⚠️ Format: `/setzip MyCustomName.zip`")
         return
 
-    zip_name = args[1]
+    zip_name = args[1].strip()
 
     zip_name_collection.update_one(
         {"user_id": user_id},
@@ -115,14 +126,14 @@ async def set_zip_name(bot, message):
 
     await message.reply(f"✅ ZIP name set to `{zip_name}`")
 
-# Create ZIP
+# === Create and send ZIP ===
 @bot.on_message(filters.command("done"))
 async def create_zip(bot, message):
     user_id = message.from_user.id
     files = list(files_collection.find({"user_id": user_id}))
 
     if not files:
-        await message.reply("⚠️ You haven't uploaded any files. Send some files first!")
+        await message.reply("⚠️ You haven't uploaded any files yet!")
         return
 
     zip_data = zip_name_collection.find_one({"user_id": user_id})
@@ -130,32 +141,46 @@ async def create_zip(bot, message):
 
     processing_message = await message.reply("⏳ Downloading files...")
 
-    with tempfile.TemporaryDirectory() as temp_dir:
-        zip_path = os.path.join(temp_dir, zip_filename)
-        with ZipFile(zip_path, "w") as zipf:
-            for file in files:
-                start_time = datetime.now()
-                file_path = None
-                while file_path is None:
-                    try:
-                        file_path = await bot.download_media(
-                            file["file_id"],
-                            file_name=os.path.join(temp_dir, file["file_name"]),
-                            progress=progress_bar,
-                            progress_args=(processing_message, start_time)
-                        )
-                    except Exception as e:
-                        print(f"Retrying download due to error: {e}")
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            zip_path = os.path.join(temp_dir, zip_filename)
+            with ZipFile(zip_path, "w") as zipf:
+                for file in files:
+                    start_time = datetime.now()
+                    max_retries = 3
+                    file_path = None
 
-                zipf.write(file_path, os.path.basename(file_path))
+                    for attempt in range(max_retries):
+                        try:
+                            file_path = await bot.download_media(
+                                file["file_id"],
+                                file_name=os.path.join(temp_dir, file["file_name"]),
+                                progress=progress_bar,
+                                progress_args=(processing_message, start_time)
+                            )
+                            break
+                        except Exception as e:
+                            print(f"[DOWNLOAD ERROR] Attempt {attempt+1}: {e}")
+                            await asyncio.sleep(2)
 
-        await message.reply_document(zip_path, caption=f"✅ Here is your ZIP file: `{zip_filename}`")
+                    if not file_path:
+                        await message.reply(f"❌ Failed to download `{file['file_name']}`.")
+                        continue
 
+                    zipf.write(file_path, os.path.basename(file_path))
+
+            await message.reply_document(zip_path, caption=f"✅ Here is your ZIP: `{zip_filename}`")
+
+    except Exception as e:
+        await message.reply(f"❌ ZIP creation failed: {e}")
+        return
+
+    # Cleanup user data
     files_collection.delete_many({"user_id": user_id})
     zip_name_collection.delete_one({"user_id": user_id})
     user_files.pop(user_id, None)
 
-# === Flask Health Check Server ===
+# === Flask Health Server (for UptimeRobot etc.) ===
 def run_dummy_server():
     app = Flask("health_check")
 
@@ -165,14 +190,14 @@ def run_dummy_server():
 
     app.run(host="0.0.0.0", port=8000)
 
-# === Background health log thread ===
+# === Background Health Logger ===
 def start_health_check():
     import time
     while True:
         print("[HEALTH CHECK] Bot is alive.")
         time.sleep(60)
 
-# === Start the bot ===
+# === Run Bot ===
 if __name__ == "__main__":
     threading.Thread(target=run_dummy_server, daemon=True).start()
     threading.Thread(target=start_health_check, daemon=True).start()
