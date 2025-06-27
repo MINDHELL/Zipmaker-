@@ -171,6 +171,23 @@ def start_health_check():
         time.sleep(60)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_dummy_server, daemon=True).start()
-    threading.Thread(target=start_health_check, daemon=True).start()
-    bot.run()
+    print("✅ Booting ZIP bot...")
+
+    # Start Flask dummy server for health check
+    try:
+        threading.Thread(target=run_dummy_server, daemon=True).start()
+        print("✅ Flask server started on port 8000")
+    except Exception as e:
+        print("❌ Flask error:", e)
+
+    try:
+        threading.Thread(target=start_health_check, daemon=True).start()
+        print("✅ Health check logger started")
+    except Exception as e:
+        print("❌ Health logger error:", e)
+
+    try:
+        print("✅ Starting Pyrogram bot...")
+        bot.run()
+    except Exception as e:
+        print("❌ Bot failed:", e)
