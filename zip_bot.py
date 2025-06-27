@@ -4,11 +4,11 @@ import asyncio
 import tempfile
 import threading
 from datetime import datetime
-from pyzipper import AESZipFile
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pymongo import MongoClient
 from flask import Flask
+from zipfile import ZipFile, ZIP_DEFLATED
 
 # Telegram Bot API Details
 API_ID = "27788368"
@@ -27,11 +27,9 @@ bot = Client("zip_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 # Track user sessions
 user_sessions = {}
 
-# Safely clean filenames
 def safe_filename(name):
     return re.sub(r"[^\w\-.]", "_", name)
 
-# Progress bar function
 async def progress_bar(current, total, message: Message, start_time, prefix="Progress"):
     if total == 0:
         return
@@ -138,18 +136,21 @@ async def create_and_send_zip(bot, message, session):
         with tempfile.TemporaryDirectory() as temp_dir:
             zip_path = os.path.join(temp_dir, zip_name)
 
-            with AESZipFile(zip_path, 'w', compression=8, encryption=2) as zipf:
-                if password:
-                    zipf.setpassword(password.encode())
+            if password:
+                import pyzipper
+                zipf = pyzipper.AESZipFile(zip_path, 'w', compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES)
+                zipf.setpassword(password.encode())
+            else:
+                zipf = ZipFile(zip_path, 'w', compression=ZIP_DEFLATED)
 
+            with zipf:
                 for file in files:
                     filename = file["file_name"]
                     filepath = os.path.join(temp_dir, filename)
                     start_time = datetime.now()
-                    retries = 3
                     file_path = None
 
-                    for attempt in range(retries):
+                    for attempt in range(3):
                         try:
                             file_path = await bot.download_media(
                                 file["file_id"],
@@ -159,21 +160,19 @@ async def create_and_send_zip(bot, message, session):
                             )
                             break
                         except Exception as e:
-                            await progress_msg.edit(f"⚠️ Retry {attempt+1} failed for `{filename}`: `{e}`")
+                            await progress_msg.edit(f"⚠️ Retry {attempt+1} for `{filename}` failed: `{e}`")
 
                     if not file_path or not os.path.exists(file_path):
-                        await progress_msg.edit(f"❌ File `{filename}` was not downloaded. Skipping.")
+                        await progress_msg.edit(f"❌ `{filename}` was not downloaded. Skipping.")
                         continue
 
-                    if os.path.getsize(file_path) < 1024:  # Less than 1KB? Something's wrong
-                        await progress_msg.edit(f"❌ File `{filename}` is too small. Skipping.")
+                    if os.path.getsize(file_path) < 10:  # Skip corrupt/empty files
+                        await progress_msg.edit(f"❌ `{filename}` is too small. Skipping.")
                         continue
 
-                    try:
-                        zipf.write(file_path, arcname=os.path.basename(file_path))
-                        valid_count += 1
-                    except Exception as e:
-                        await progress_msg.edit(f"❌ Failed to add `{filename}` to zip: `{e}`")
+                    zipf.write(file_path, arcname=os.path.basename(file_path))
+                    valid_count += 1
+                    print(f"✔️ Added to ZIP: {file_path}")
 
             if valid_count == 0:
                 await progress_msg.edit("❌ Failed to create ZIP. No valid files were added.")
@@ -202,21 +201,17 @@ def run_dummy_server():
 
     app.run(host="0.0.0.0", port=8000)
 
-# Optional: Background health check log
 def start_health_check():
     import time
     while True:
         print("[HEALTH CHECK] Bot is alive.")
         time.sleep(60)
 
-# Main Entry
 if __name__ == "__main__":
     print("✅ Booting ZIP bot...")
-
     threading.Thread(target=run_dummy_server, daemon=True).start()
     threading.Thread(target=start_health_check, daemon=True).start()
-
     try:
         bot.run()
     except Exception as e:
-        print("❌ Bot failed to start:", e)
+        print("❌ Bot failed:", e)
