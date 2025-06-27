@@ -5,6 +5,7 @@ import threading
 from zipfile import ZipFile
 from datetime import datetime
 from pyrogram import Client, filters
+from pyrogram.types import Message
 from pymongo import MongoClient
 from flask import Flask
 
@@ -27,34 +28,30 @@ bot = Client("zip_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 user_files = {}
 
 # === Progress Bar Function ===
-async def progress_bar(current, total, *args):
-    message, start_time = args
-
+async def progress_bar(current, total, message: Message, start_time):
     if total == 0:
         return
+    elapsed = (datetime.now() - start_time).total_seconds()
+    speed = current / elapsed if elapsed > 0 else 0
+    eta = (total - current) / speed if speed > 0 else 0
+    percent = current * 100 / total
 
-    percent = (current / total) * 100
-    elapsed_time = (datetime.now() - start_time).total_seconds()
-    speed = current / elapsed_time if elapsed_time > 0 else 0
-    remaining_time = (total - current) / speed if speed > 0 else 0
-
-    progress = f"[{'█' * int(percent // 5)}{' ' * (20 - int(percent // 5))}]"
+    progress_str = "█" * int(percent / 5) + "░" * (20 - int(percent / 5))
     text = (
-        f"⏳ Downloading... {percent:.2f}%\n"
-        f"{progress}\n"
-        f"📥 Downloaded: {current / (1024 * 1024):.2f} MB / {total / (1024 * 1024):.2f} MB\n"
-        f"🚀 Speed: {speed / (1024 * 1024):.2f} MB/s\n"
-        f"⌛ ETA: {remaining_time:.2f} sec"
+        f"📦 **Progress**\n"
+        f"`[{progress_str}]` {percent:.2f}%\n"
+        f"📥 {current / 1024**2:.2f}MB / {total / 1024**2:.2f}MB\n"
+        f"⚡ Speed: {speed / 1024**2:.2f} MB/s\n"
+        f"⏳ ETA: {eta:.1f}s"
     )
-
     try:
         await message.edit(text)
-    except Exception:
-        pass  # In case message is deleted or edited elsewhere
+    except:
+        pass
 
 # === /start command ===
 @bot.on_message(filters.command("start"))
-async def start(bot, message):
+async def start_command(bot, message):
     await message.reply(
         "👋 Send me videos, photos, or documents to zip!\n\n"
         "✅ When you're ready, use `/done`\n"
@@ -139,43 +136,36 @@ async def create_zip(bot, message):
     zip_data = zip_name_collection.find_one({"user_id": user_id})
     zip_filename = zip_data["zip_name"] if zip_data else f"user_{user_id}.zip"
 
-    processing_message = await message.reply("⏳ Downloading files...")
+    progress_msg = await message.reply("⏳ Preparing to download files...")
 
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             zip_path = os.path.join(temp_dir, zip_filename)
+
             with ZipFile(zip_path, "w") as zipf:
                 for file in files:
                     start_time = datetime.now()
-                    max_retries = 3
-                    file_path = None
+                    file_name = file["file_name"]
+                    file_id = file["file_id"]
 
-                    for attempt in range(max_retries):
-                        try:
-                            file_path = await bot.download_media(
-                                file["file_id"],
-                                file_name=os.path.join(temp_dir, file["file_name"]),
-                                progress=progress_bar,
-                                progress_args=(processing_message, start_time)
-                            )
-                            break
-                        except Exception as e:
-                            print(f"[DOWNLOAD ERROR] Attempt {attempt+1}: {e}")
-                            await asyncio.sleep(2)
-
-                    if not file_path:
-                        await message.reply(f"❌ Failed to download `{file['file_name']}`.")
-                        continue
+                    file_path = await bot.download_media(
+                        file_id,
+                        file_name=os.path.join(temp_dir, file_name),
+                        progress=progress_bar,
+                        progress_args=(progress_msg, start_time),
+                        fast_download=True
+                    )
 
                     zipf.write(file_path, os.path.basename(file_path))
 
-            await message.reply_document(zip_path, caption=f"✅ Here is your ZIP: `{zip_filename}`")
+            await progress_msg.edit("✅ Uploading ZIP...")
+            await message.reply_document(zip_path, caption=f"📦 Zipped: `{zip_filename}`")
 
     except Exception as e:
-        await message.reply(f"❌ ZIP creation failed: {e}")
+        await progress_msg.edit(f"❌ Error: {str(e)}")
         return
 
-    # Cleanup user data
+    # Cleanup
     files_collection.delete_many({"user_id": user_id})
     zip_name_collection.delete_one({"user_id": user_id})
     user_files.pop(user_id, None)
