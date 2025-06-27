@@ -127,7 +127,7 @@ async def create_and_send_zip(bot, message, session):
     files = session["files"]
     valid_file_count = 0
 
-    progress_msg = await message.reply("⏳ Starting download and ZIP creation...")
+    progress_msg = await message.reply("⏳ Downloading and creating ZIP...")
 
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -139,28 +139,36 @@ async def create_and_send_zip(bot, message, session):
 
                 for f in files:
                     file_name = f["file_name"]
-                    file_path = os.path.join(temp_dir, file_name)
+                    temp_file_path = os.path.join(temp_dir, file_name)
                     start_time = datetime.now()
+
                     try:
                         downloaded_path = await bot.download_media(
                             f["file_id"],
-                            file_name=file_path,
+                            file_name=temp_file_path,
                             progress=progress_bar,
                             progress_args=(progress_msg, start_time, f"Downloading `{file_name}`")
                         )
-                        if downloaded_path and os.path.exists(downloaded_path):
+
+                        # ✅ Confirm the file exists and is not empty
+                        if downloaded_path and os.path.exists(downloaded_path) and os.path.getsize(downloaded_path) > 0:
                             zipf.write(downloaded_path, arcname=os.path.basename(downloaded_path))
                             valid_file_count += 1
+                        else:
+                            await progress_msg.edit(f"⚠️ Skipped `{file_name}` (downloaded_path invalid or empty).")
+
                     except Exception as e:
-                        await progress_msg.edit(f"❌ Failed downloading `{file_name}`: `{e}`")
+                        await progress_msg.edit(f"❌ Error downloading `{file_name}`:\n`{e}`")
                         continue
 
+            # ✅ Final check if ZIP is valid
             if not os.path.exists(zip_path) or os.path.getsize(zip_path) < 100 or valid_file_count == 0:
                 await progress_msg.edit("❌ Failed to create ZIP. No valid files were added.")
                 return
 
             await progress_msg.edit("📤 Uploading ZIP...")
             start_time = datetime.now()
+
             await message.reply_document(
                 zip_path,
                 caption=f"✅ Your ZIP file: `{zip_name}`",
@@ -169,7 +177,8 @@ async def create_and_send_zip(bot, message, session):
             )
 
     except Exception as e:
-        await progress_msg.edit(f"❌ Critical error during ZIP creation:\n`{e}`")
+        await progress_msg.edit(f"❌ Critical ZIP error:\n`{e}`")
+
 
 # Flask health check server
 def run_dummy_server():
