@@ -73,7 +73,7 @@ async def done_collecting(bot, message):
     user_sessions[user_id]["status"] = "awaiting_name"
     await message.reply("📦 Please send the name you want for your ZIP file (e.g., `myfiles.zip`).")
 
-@bot.on_message(filters.text & ~filters.command)
+@bot.on_message(filters.text & ~filters.command(["start", "zip", "done"]))
 async def handle_text(bot, message):
     user_id = message.from_user.id
     session = user_sessions.get(user_id)
