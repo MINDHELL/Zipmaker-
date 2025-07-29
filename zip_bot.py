@@ -14,7 +14,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 API_ID = "27788368"
 API_HASH = "9df7e9ef3d7e4145270045e5e43e1081"
 BOT_TOKEN = "8064879322:AAHvYtmZRsRamwHqhgUbXW-yZ5rjHhwdE4A"
-MONGO_URL = "mongodb+srv://aarshhub:6L1PAPikOnAIHIRA@cluster0.6shiu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+MONGO_URL = "mongodb+srv://aarshhub:wcCgmKoCu2sTsEtv@cluster0.6shiu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
 # MongoDB Setup
 mongo_client = MongoClient(MONGO_URL)
