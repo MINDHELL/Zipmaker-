@@ -10,7 +10,7 @@ from flask import Flask
 
 # ================= CONFIG =================
 
-API_ID = "37371391"
+API_ID = 37371391
 API_HASH = "37895f967d284f6781f99e9beef21ebf"
 BOT_TOKEN = "8229073869:AAELqqd2a4GhqqvelSpla0XNmLBz-c4QN3U"
 
@@ -27,7 +27,7 @@ sessions = {}
 def safe(name):
     if not name:
         return "file.bin"
-    return re.sub(r"[^\w\-.]", "_", name)
+    return re.sub(r"[^\w\-.]", "_", str(name))
 
 
 async def progress_bar(current, total, msg, start, title):
@@ -37,6 +37,7 @@ async def progress_bar(current, total, msg, start, title):
     filled = int(percent / 5)
     bar = "█" * filled + "░" * (20 - filled)
     speed = current / max((datetime.now() - start).total_seconds(), 1)
+
     try:
         await msg.edit(
             f"📦 **{title}**\n"
@@ -47,10 +48,12 @@ async def progress_bar(current, total, msg, start, title):
     except:
         pass
 
+
 async def upload_file(bot, message, path):
     await message.reply_document(path)
     if ENABLE_DUMP and DUMP_CHANNEL_ID:
         await bot.send_document(DUMP_CHANNEL_ID, path)
+
 
 async def upload_folder(bot, message, folder):
     for root, _, files in os.walk(folder):
@@ -70,25 +73,30 @@ async def start(_, m):
         "/cancel – Cancel task"
     )
 
+
 @bot.on_message(filters.command("cancel"))
 async def cancel(_, m):
     sessions.pop(m.from_user.id, None)
     await m.reply("❌ Cancelled")
+
 
 @bot.on_message(filters.command("zip"))
 async def zip_start(_, m):
     sessions[m.from_user.id] = {"mode": "zip", "files": [], "step": "collect"}
     await m.reply("📤 Send files → /done")
 
+
 @bot.on_message(filters.command("unzip"))
 async def unzip_start(_, m):
     sessions[m.from_user.id] = {"mode": "unzip", "files": []}
-    await m.reply("📂 Send ZIP or RAR → /done")
+    await m.reply("📂 Send ZIP/RAR → /done")
+
 
 @bot.on_message(filters.command("rejoin"))
 async def rejoin_start(_, m):
     sessions[m.from_user.id] = {"mode": "rejoin", "files": []}
-    await m.reply("🔗 Send all ZIP parts (.001, .002…) → /done")
+    await m.reply("🔗 Send all parts (.001, .002…) → /done")
+
 
 @bot.on_message(filters.command("rename"))
 async def rename_start(_, m):
@@ -97,26 +105,22 @@ async def rename_start(_, m):
 
 # ================= FILE COLLECT =================
 
-@bot.on_message(filters.document | filters.video | filters.photo)
+@bot.on_message(filters.private & (filters.document | filters.video | filters.photo))
 async def collect(_, m):
     s = sessions.get(m.from_user.id)
     if not s:
         return
 
-    file = m.document or m.video or m.photo
+    media = m.document or m.video or m.photo
 
-    # ✅ FIX: force a real filename
-    if file.file_name:
-        name = file.file_name
-    elif m.photo:
-        name = f"photo_{file.file_id}.jpg"
-    elif m.video:
-        name = f"video_{file.file_id}.mp4"
-    else:
-        name = f"{file.file_id}.bin"
+    name = (
+        media.file_name
+        if getattr(media, "file_name", None)
+        else f"{media.file_id}.bin"
+    )
 
     s["files"].append({
-        "id": file.file_id,
+        "id": media.file_id,
         "name": safe(name)
     })
 
@@ -125,7 +129,7 @@ async def collect(_, m):
 # ================= DONE =================
 
 @bot.on_message(filters.command("done"))
-async def done(bot, m):
+async def done(_, m):
     s = sessions.get(m.from_user.id)
     if not s or not s["files"]:
         return await m.reply("⚠️ No files")
@@ -139,15 +143,15 @@ async def done(bot, m):
         return await m.reply("✏️ New name?")
 
     if s["mode"] == "unzip":
-        await unzip(bot, m, s)
+        return await unzip(bot, m, s)
 
     if s["mode"] == "rejoin":
-        await rejoin(bot, m, s)
+        return await rejoin(bot, m, s)
 
-# ================= TEXT FLOW =================
+# ================= TEXT FLOW (FIXED) =================
 
-bot.on_message(filters.command(["zip","rejoin","unzip","rename"]))
-async def text_flow(bot, m):
+@bot.on_message(filters.private & filters.text & ~filters.command)
+async def text_flow(_, m):
     s = sessions.get(m.from_user.id)
     if not s:
         return
@@ -162,14 +166,14 @@ async def text_flow(bot, m):
             s["step"] = "pwd"
             return await m.reply("🔑 Send password")
         s["pwd"] = None
-        await make_zip(bot, m, s)
+        return await make_zip(bot, m, s)
 
     if s.get("step") == "pwd":
         s["pwd"] = m.text
-        await make_zip(bot, m, s)
+        return await make_zip(bot, m, s)
 
     if s.get("step") == "rename":
-        await rename(bot, m, s)
+        return await rename(bot, m, s)
 
 # ================= ZIP =================
 
@@ -191,8 +195,8 @@ async def make_zip(bot, m, s):
         cmd = ["7z", "a", zip_path, files_dir]
         if s.get("pwd"):
             cmd.insert(2, f"-p{s['pwd']}")
-        subprocess.run(cmd)
 
+        subprocess.run(cmd, check=True)
         await upload_file(bot, m, zip_path)
 
     sessions.pop(m.from_user.id, None)
@@ -204,10 +208,11 @@ async def unzip(bot, m, s):
     with tempfile.TemporaryDirectory() as tmp:
         f = s["files"][0]
         path = await bot.download_media(f["id"], tmp)
+
         out = os.path.join(tmp, "out")
         os.mkdir(out)
 
-        subprocess.run(["7z", "x", path, f"-o{out}", "-y"])
+        subprocess.run(["7z", "x", path, f"-o{out}", "-y"], check=True)
         await upload_folder(bot, m, out)
 
     sessions.pop(m.from_user.id, None)
@@ -217,17 +222,16 @@ async def unzip(bot, m, s):
 async def rejoin(bot, m, s):
     msg = await m.reply("⏳ Rejoining...")
     with tempfile.TemporaryDirectory() as tmp:
-        parts = []
         for f in s["files"]:
-            p = os.path.join(tmp, f["name"])
-            await bot.download_media(f["id"], p)
-            parts.append(p)
+            await bot.download_media(f["id"], os.path.join(tmp, f["name"]))
 
-        parts.sort()
+        parts = sorted(os.listdir(tmp))
+        first = os.path.join(tmp, parts[0])
+
         out = os.path.join(tmp, "out")
         os.mkdir(out)
 
-        subprocess.run(["7z", "x"] + parts + [f"-o{out}", "-y"])
+        subprocess.run(["7z", "x", first, f"-o{out}", "-y"], check=True)
         await upload_folder(bot, m, out)
 
     sessions.pop(m.from_user.id, None)
@@ -249,9 +253,11 @@ async def rename(bot, m, s):
 
 def health():
     app = Flask("health")
+
     @app.route("/")
     def ok():
         return "OK"
+
     app.run("0.0.0.0", 8000)
 
 # ================= START =================
