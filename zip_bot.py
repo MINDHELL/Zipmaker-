@@ -130,7 +130,7 @@ async def done(bot, message):
         await handle_unzip(bot, message, session)
 
 # ================== TEXT FLOW ==================
-@bot.on_message(filters.text & ~filters.command)
+bot.on_message(filters.command(["zip","rejoin","unzip","rename"]))
 async def text_flow(bot, message):
     session = user_sessions.get(message.from_user.id)
     if not session:
