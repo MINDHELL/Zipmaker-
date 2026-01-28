@@ -150,7 +150,7 @@ async def done(_, m):
 
 # ================= TEXT FLOW (FIXED) =================
 
-@bot.on_message(filters.private & filters.text & ~filters.command)
+@bot.on_message(filters.private & filters.text & ~filters.command(["zip","rejoin","unzip","rename"]))
 async def text_flow(_, m):
     s = sessions.get(m.from_user.id)
     if not s:
