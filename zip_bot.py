@@ -107,7 +107,7 @@ async def done(_, m):
         return await unzip_process(m, s)
 
 # ================= TEXT HANDLER =================
-@bot.on_message(filters.text & ~filters.command)
+@bot.on_message(filters.text & ~filters.command(["start", "zip", "rejoin", "unzip", "done", "cancel"]))
 async def text_handler(_, m):
     s = user_sessions.get(m.from_user.id)
     if not s:
