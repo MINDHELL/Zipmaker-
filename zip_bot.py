@@ -12,7 +12,7 @@ from flask import Flask
 # ================= CONFIG =================
 API_ID = "37371391"
 API_HASH = "37895f967d284f6781f99e9beef21ebf"
-BOT_TOKEN = "8064879322:AAHvYtmZRsRamwHqhgUbXW-yZ5rjHhwdE4A"
+BOT_TOKEN = "8229073869:AAELqqd2a4GhqqvelSpla0XNmLBz-c4QN3U"
 
 # OPTIONAL: dump channel (set to None to disable)
 DUMP_CHANNEL = -1003758304454  # example: -1001234567890
