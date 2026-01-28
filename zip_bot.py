@@ -25,7 +25,10 @@ sessions = {}
 # ================= UTILS =================
 
 def safe(name):
+    if not name:
+        return "file.bin"
     return re.sub(r"[^\w\-.]", "_", name)
+
 
 async def progress_bar(current, total, msg, start, title):
     if total == 0:
@@ -99,10 +102,25 @@ async def collect(_, m):
     s = sessions.get(m.from_user.id)
     if not s:
         return
+
     file = m.document or m.video or m.photo
-    name = getattr(file, "file_name", f"{file.file_id}.bin")
-    s["files"].append({"id": file.file_id, "name": safe(name)})
-    await m.reply(f"✅ `{name}` added")
+
+    # ✅ FIX: force a real filename
+    if file.file_name:
+        name = file.file_name
+    elif m.photo:
+        name = f"photo_{file.file_id}.jpg"
+    elif m.video:
+        name = f"video_{file.file_id}.mp4"
+    else:
+        name = f"{file.file_id}.bin"
+
+    s["files"].append({
+        "id": file.file_id,
+        "name": safe(name)
+    })
+
+    await m.reply(f"✅ `{safe(name)}` added")
 
 # ================= DONE =================
 
