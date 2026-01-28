@@ -140,7 +140,7 @@ async def done(bot, message):
         await handle_rename(bot, message, session)
 
 # ================== TEXT FLOW ==================
-@bot.on_message(filters.text & ~filters.command)
+@bot.on_message(filters.text & ~filters.command(["start", "zip", "rejoin", "unzip", "done", "cancel"]))
 async def text_flow(bot, message):
     session = user_sessions.get(message.from_user.id)
     if not session:
