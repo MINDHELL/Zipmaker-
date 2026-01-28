@@ -14,11 +14,12 @@ from flask import Flask
 API_ID = "37371391"
 API_HASH = "37895f967d284f6781f99e9beef21ebf"
 BOT_TOKEN = "8229073869:AAELqqd2a4GhqqvelSpla0XNmLBz-c4QN3U"
+
 ENABLE_DUMP = True
 DUMP_CHANNEL_ID = int(os.getenv("DUMP_CHANNEL_ID", "-1003758304454"))  # -100xxxx
-MAX_ZIP_SIZE_MB = 2000  # 2GB split for large zips
 
 # ============================================
+
 bot = Client("zip_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 user_sessions = {}
 
@@ -44,9 +45,20 @@ async def progress_bar(current, total, message, start, prefix):
         pass
 
 async def upload(bot, message, path):
-    await message.reply_document(path)
-    if ENABLE_DUMP and DUMP_CHANNEL_ID:
-        await bot.send_document(DUMP_CHANNEL_ID, path, caption=f"📦 From user {message.from_user.id}")
+    if os.path.isfile(path):
+        await message.reply_document(path)
+        if ENABLE_DUMP and DUMP_CHANNEL_ID:
+            await bot.send_document(
+                DUMP_CHANNEL_ID,
+                path,
+                caption=f"📦 From user {message.from_user.id}"
+            )
+
+async def upload_all_files(bot, message, folder_path):
+    for root, dirs, files in os.walk(folder_path):
+        for f in files:
+            full_path = os.path.join(root, f)
+            await upload(bot, message, full_path)
 
 # ================== COMMANDS ==================
 @bot.on_message(filters.command("start"))
@@ -56,7 +68,7 @@ async def start(bot, message):
         "/zip – Zip files\n"
         "/rejoin – Rejoin split ZIPs\n"
         "/unzip – Extract ZIP / RAR\n"
-        "/rename – Rename a single file\n"
+        "/rename – Rename ZIP before sending\n"
         "/cancel – Cancel task"
     )
 
@@ -65,25 +77,24 @@ async def cancel(bot, message):
     user_sessions.pop(message.from_user.id, None)
     await message.reply("❌ Task cancelled.")
 
-@bot.on_message(filters.command("zip"))
-async def zip_start(bot, message):
-    user_sessions[message.from_user.id] = {"mode": "zip", "status": "collecting", "files": []}
-    await message.reply("📦 Send file(s) to zip.\nSend /done when finished.")
-
-@bot.on_message(filters.command("rejoin"))
-async def rejoin_start(bot, message):
-    user_sessions[message.from_user.id] = {"mode": "rejoin", "status": "collecting", "files": []}
-    await message.reply("🔗 Send ALL split ZIP parts (.001, .002...).\nSend /done.")
-
-@bot.on_message(filters.command("unzip"))
-async def unzip_start(bot, message):
-    user_sessions[message.from_user.id] = {"mode": "unzip", "status": "waiting", "files": []}
-    await message.reply("📂 Send ZIP or RAR file and then /done.")
-
-@bot.on_message(filters.command("rename"))
-async def rename_start(bot, message):
-    user_sessions[message.from_user.id] = {"mode": "rename", "status": "waiting_file", "files": []}
-    await message.reply("✏️ Send a single file to rename.")
+# ================== SESSION START ==================
+@bot.on_message(filters.command(["zip","rejoin","unzip","rename"]))
+async def start_session(bot, message):
+    cmd = message.text[1:].split()[0].lower()
+    mode = cmd
+    user_sessions[message.from_user.id] = {
+        "mode": mode,
+        "status": "collecting" if mode in ["zip","rejoin"] else "waiting",
+        "files": []
+    }
+    if mode == "zip":
+        await message.reply("📦 Send files to zip. /done when finished.")
+    elif mode == "rejoin":
+        await message.reply("🔗 Send all split parts (.001/.002...). /done when finished.")
+    elif mode == "unzip":
+        await message.reply("📂 Send ZIP or RAR file to extract.")
+    elif mode == "rename":
+        await message.reply("✏️ Send ZIP file to rename.")
 
 # ================== FILE COLLECT ==================
 @bot.on_message(filters.document | filters.video | filters.photo)
@@ -91,9 +102,13 @@ async def collect(bot, message):
     session = user_sessions.get(message.from_user.id)
     if not session:
         return
+
     file = message.document or message.video or message.photo
     name = getattr(file, "file_name", f"{file.file_id}.bin")
-    session["files"].append({"file_id": file.file_id, "file_name": safe_filename(name)})
+    session["files"].append({
+        "file_id": file.file_id,
+        "file_name": safe_filename(name)
+    })
     await message.reply(f"✅ Added `{name}`")
 
 # ================== DONE HANDLER ==================
@@ -105,40 +120,45 @@ async def done(bot, message):
 
     if session["mode"] == "zip":
         session["status"] = "ask_name"
-        return await message.reply("✏️ Send ZIP name")
-    elif session["mode"] == "rejoin":
-        return await handle_rejoin(bot, message, session)
-    elif session["mode"] == "unzip":
-        return await handle_unzip(bot, message, session)
+        await message.reply("✏️ Send ZIP name")
     elif session["mode"] == "rename":
-        session["status"] = "waiting_new_name"
-        return await message.reply("✏️ Send new name for the file")
+        session["status"] = "ask_name"
+        await message.reply("✏️ Send new ZIP name")
+    elif session["mode"] == "rejoin":
+        await handle_rejoin(bot, message, session)
+    elif session["mode"] == "unzip":
+        await handle_unzip(bot, message, session)
 
 # ================== TEXT FLOW ==================
-@bot.on_message(filters.text & ~filters.command(["start", "zip", "rejoin", "unzip", "done", "cancel"]))
+@bot.on_message(filters.text & ~filters.command)
 async def text_flow(bot, message):
     session = user_sessions.get(message.from_user.id)
     if not session:
         return
 
-    if session.get("status") == "ask_name":
-        session["zip_name"] = safe_filename(message.text) + ".zip"
-        session["status"] = "ask_password"
-        return await message.reply("🔐 Password protect? (yes / no)")
+    if session["status"] == "ask_name":
+        zip_name = safe_filename(message.text)
+        if not zip_name.endswith(".zip"):
+            zip_name += ".zip"
+        session["zip_name"] = zip_name
+        if session["mode"] == "zip":
+            session["status"] = "ask_password"
+            await message.reply("🔐 Password protect? (yes / no)")
+        elif session["mode"] == "rename":
+            # Only rename
+            await rename_zip(bot, message, session)
 
-    if session.get("status") == "ask_password":
+    elif session["status"] == "ask_password":
         if message.text.lower() == "yes":
             session["status"] = "waiting_password"
-            return await message.reply("🔑 Send password")
-        session["password"] = None
-        return await create_zip(bot, message, session)
+            await message.reply("🔑 Send password")
+        else:
+            session["password"] = None
+            await create_zip(bot, message, session)
 
-    if session.get("status") == "waiting_password":
+    elif session["status"] == "waiting_password":
         session["password"] = message.text
-        return await create_zip(bot, message, session)
-
-    if session.get("status") == "waiting_new_name" and session["mode"] == "rename":
-        await handle_rename(bot, message, session)
+        await create_zip(bot, message, session)
 
 # ================== ZIP CREATE ==================
 async def create_zip(bot, message, session):
@@ -146,41 +166,35 @@ async def create_zip(bot, message, session):
     with tempfile.TemporaryDirectory() as tmp:
         files_dir = os.path.join(tmp, "files")
         os.mkdir(files_dir)
-
         for f in session["files"]:
             start = datetime.now()
-            await bot.download_media(f["file_id"], os.path.join(files_dir, f["file_name"]),
-                                     progress=progress_bar, progress_args=(progress, start, "Downloading"))
+            await bot.download_media(
+                f["file_id"],
+                os.path.join(files_dir, f["file_name"]),
+                progress=progress_bar,
+                progress_args=(progress, start, "Downloading")
+            )
 
         zip_path = os.path.join(tmp, session["zip_name"])
-        cmd = ["7z", "a", zip_path, files_dir, "-y"]
+        cmd = ["7z", "a"]
         if session.get("password"):
-            cmd.insert(2, f"-p{session['password']}")
+            cmd.append(f"-p{session['password']}")
+        cmd += [zip_path, files_dir]
         subprocess.run(cmd)
         await upload(bot, message, zip_path)
 
     user_sessions.pop(message.from_user.id, None)
 
-# ================== REJOIN ==================
-async def handle_rejoin(bot, message, session):
-    progress = await message.reply("⏳ Rejoining parts...")
+# ================== RENAME ==================
+async def rename_zip(bot, message, session):
+    f = session["files"][0]
     with tempfile.TemporaryDirectory() as tmp:
-        files = sorted(session["files"], key=lambda x: x["file_name"])  # Ensure correct order
-        for f in files:
-            await bot.download_media(f["file_id"], os.path.join(tmp, f["file_name"]),
-                                     progress=progress_bar, progress_args=(progress, datetime.now(), "Downloading"))
-
-        # Combine using 7z
-        extract_dir = os.path.join(tmp, "extract")
-        os.mkdir(extract_dir)
-        first_part = os.path.join(tmp, files[0]["file_name"])
-        subprocess.run(["7z", "x", first_part, f"-o{extract_dir}", "-y"])
-
-        session["extract_dir"] = extract_dir
-        session["status"] = "choose_output"
-        await message.reply(
-            "📤 Choose output:\n1️⃣ Upload extracted files\n2️⃣ Re-zip in 2GB chunks"
-        )
+        path = os.path.join(tmp, f["file_name"])
+        await bot.download_media(f["file_id"], path)
+        new_path = os.path.join(tmp, session["zip_name"])
+        os.rename(path, new_path)
+        await upload(bot, message, new_path)
+    user_sessions.pop(message.from_user.id, None)
 
 # ================== UNZIP ==================
 async def handle_unzip(bot, message, session):
@@ -193,22 +207,24 @@ async def handle_unzip(bot, message, session):
         out_dir = os.path.join(tmp, "out")
         os.mkdir(out_dir)
         subprocess.run(["7z", "x", path, f"-o{out_dir}", "-y"])
-
-        for file in os.listdir(out_dir):
-            await upload(bot, message, os.path.join(out_dir, file))
+        await upload_all_files(bot, message, out_dir)
 
     user_sessions.pop(message.from_user.id, None)
 
-# ================== RENAME ==================
-async def handle_rename(bot, message, session):
-    f = session["files"][0]
+# ================== REJOIN ==================
+async def handle_rejoin(bot, message, session):
+    progress = await message.reply("⏳ Rejoining parts...")
     with tempfile.TemporaryDirectory() as tmp:
-        old_path = os.path.join(tmp, f["file_name"])
-        await bot.download_media(f["file_id"], old_path, progress=progress_bar, progress_args=(message, datetime.now(), "Downloading"))
-        new_name = safe_filename(message.text)
-        new_path = os.path.join(tmp, new_name)
-        os.rename(old_path, new_path)
-        await upload(bot, message, new_path)
+        files = sorted(session["files"], key=lambda x: x["file_name"])
+        for f in files:
+            await bot.download_media(f["file_id"], os.path.join(tmp, f["file_name"]), progress=progress_bar, progress_args=(progress, datetime.now(), "Downloading"))
+
+        extract_dir = os.path.join(tmp, "extract")
+        os.mkdir(extract_dir)
+        first_part = os.path.join(tmp, files[0]["file_name"])
+        subprocess.run(["7z", "x", first_part, f"-o{extract_dir}", "-y"])
+        await upload_all_files(bot, message, extract_dir)
+
     user_sessions.pop(message.from_user.id, None)
 
 # ================== HEALTH SERVER ==================
