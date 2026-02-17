@@ -13,7 +13,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 # Telegram Bot API Details
 API_ID = "27788368"
 API_HASH = "9df7e9ef3d7e4145270045e5e43e1081"
-BOT_TOKEN = "8064879322:AAHvYtmZRsRamwHqhgUbXW-yZ5rjHhwdE4A"
+BOT_TOKEN = "7411785952:AAHE7utWPpx73UHvIh7zgeA-a_KUGOCtXKQ"
 MONGO_URL = "mongodb+srv://aarshhub:wcCgmKoCu2sTsEtv@cluster0.6shiu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
 # MongoDB Setup
